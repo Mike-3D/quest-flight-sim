@@ -1,4 +1,4 @@
-# Quest Flight Sim — v0.5
+# Quest Flight Sim — v0.6
 
 A tiny WebXR flight experiment for Meta Quest 3 built with Three.js, deployed as a static site on GitHub Pages. No build step required.
 
@@ -42,3 +42,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.4.1: stronger nearby terrain relief and chunk-count diagnostic.
 
 - v0.5: world-space procedural farmland shader with field boundaries, crop colors and distance-filtered ground detail.
+
+- v0.6: procedural river valley and road surface, simplified point-mass lift, drag, thrust, gravity, banked turns and stall lift reduction. Terrain clearance assist remains enabled.

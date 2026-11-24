@@ -35,7 +35,10 @@ function terrainHeight(x,z) {
   const hills=65*noise(x/260,z/260)+18*noise(x/95,z/95);
   const mountain= Math.pow(noise(x/700+8,z/700+4),2)*300;
   const blend=THREE.MathUtils.smoothstep(Math.hypot(x,z-180),140,420);
-  return -12+blend*(hills+mountain+180*Math.exp(-((x-330)**2+(z+550)**2)/180000));
+  const raw=-12+blend*(hills+mountain+180*Math.exp(-((x-330)**2+(z+550)**2)/180000));
+  const riverX=420+180*Math.sin(z/430)+70*Math.sin(z/170);
+  const valley=1-THREE.MathUtils.smoothstep(Math.abs(x-riverX),12,160);
+  return THREE.MathUtils.lerp(raw,-15,valley);
 }
 const terrainMat=new THREE.MeshLambertMaterial({vertexColors:true});
  // World-space procedural farmland; no additional textures or geometry.
@@ -68,6 +71,18 @@ vec3 fieldColor=pasture*(0.94+rows*rowDetail);
 fieldColor=mix(vec3(0.54,0.65,0.38),fieldColor,border);
 float detail=(landNoise(p*0.65)-0.5)*0.22*(1.0-smoothstep(0.4,2.0,length(fwidth(p))));
 diffuseColor.rgb*=mix(vec3(1.0),fieldColor,farm)*(1.0+detail);
+float riverX=420.0+180.0*sin(p.y/430.0)+70.0*sin(p.y/170.0);
+float rd=abs(p.x-riverX);
+float water=1.0-smoothstep(10.0,15.0+fwidth(rd),rd);
+float bank=1.0-smoothstep(15.0,23.0+fwidth(rd),rd);
+diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.34,0.30,0.19),bank);
+diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.045,0.24,0.34),water);
+float roadX=-190.0+95.0*sin(p.y/380.0)+40.0*sin(p.y/145.0);
+float roadDist=abs(p.x-roadX);
+float road=1.0-smoothstep(3.0,4.5+fwidth(roadDist),roadDist);
+diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.16,0.16,0.15),road*(1.0-water));
+float dash=(1.0-smoothstep(0.12,0.35+fwidth(roadDist),roadDist))*step(0.5,fract(p.y/12.0));
+diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.65),dash*road*(1.0-water));
 `);
 };
 
@@ -171,13 +186,15 @@ addEventListener('keyup', e => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
 document.getElementById('reset').addEventListener('click', reset);
 
-let speed = 28;
+let speed = 32;
+let power = 0.55, climbAngle = 0;
+const mass=550, wingArea=12, gravity=9.81;
 let yaw = 0, pitch = 0, roll = 0;
 let lastStatus = '';
 function reset() {
   plane.position.set(0, 150, 180);
   plane.rotation.set(0, 0, 0);
-  speed = 28; yaw = 0; pitch = 0; roll = 0;
+  speed = 32; power=0.55; climbAngle=0; yaw = 0; pitch = 0.065; roll = 0;
   lastStatus = '';
 }
 reset();
@@ -229,18 +246,29 @@ renderer.setAnimationLoop((time) => {
   const dt = lastTime === null ? 0 : Math.min((time - lastTime) / 1000, 0.05);
   lastTime = time;
   const controls = getControls();
-  speed = THREE.MathUtils.clamp(speed + controls.throttle * dt * 18, 8, 85);
-  yaw -= controls.steerX * dt * 0.82;
-  pitch = THREE.MathUtils.clamp(pitch - controls.steerY * dt * 0.57, -0.8, 0.8);
-  roll = THREE.MathUtils.damp(roll, -controls.steerX * 0.38, 3, dt);
-  plane.rotation.order = 'YXZ';
-  plane.rotation.set(pitch, yaw, roll);
-  forward.set(0, 0, -1).applyQuaternion(plane.quaternion);
-  plane.position.addScaledVector(forward, speed * dt);
+  power=THREE.MathUtils.clamp(power+controls.throttle*dt*0.35,0,1);
+  pitch=THREE.MathUtils.clamp(pitch-controls.steerY*dt*0.38,-0.45,0.45);
+  roll=THREE.MathUtils.damp(roll,-controls.steerX*0.55,2.5,dt);
+  yaw+=gravity*Math.tan(roll)/Math.max(speed,15)*dt;
+  // Simplified point-mass aerodynamic model; no wind or rotational inertia.
+  const alpha=pitch-climbAngle;
+  const stall=1-0.65*THREE.MathUtils.smoothstep(Math.abs(alpha),0.24,0.48);
+  const cl=THREE.MathUtils.clamp(0.32+4.5*alpha,-0.9,1.45)*stall;
+  const q=0.5*1.225*speed*speed;
+  const lift=q*wingArea*cl;
+  const drag=q*wingArea*(0.035+0.065*cl*cl+0.12*(1-stall));
+  const thrust=power*1500;
+  speed=THREE.MathUtils.clamp(speed+(thrust*Math.cos(alpha)-drag-mass*gravity*Math.sin(climbAngle))/mass*dt,8,75);
+  climbAngle=THREE.MathUtils.clamp(climbAngle+(lift*Math.cos(roll)+thrust*Math.sin(alpha)-mass*gravity*Math.cos(climbAngle))/(mass*Math.max(speed,8))*dt,-0.65,0.65);
+  plane.rotation.order='YXZ';
+  plane.rotation.set(pitch,yaw,roll);
+  forward.set(-Math.sin(yaw)*Math.cos(climbAngle),Math.sin(climbAngle),-Math.cos(yaw)*Math.cos(climbAngle));
+  plane.position.addScaledVector(forward,speed*dt);
   const minimumY = terrainHeight(plane.position.x, plane.position.z) + 15;
   if (plane.position.y < minimumY) {
     plane.position.y = minimumY;
-    pitch = Math.max(pitch, 0.08);
+    pitch = Math.max(pitch, 0.10);
+    climbAngle=Math.max(climbAngle,0);
     lastStatus = 'Низкая высота — автоматическая коррекция';
   } else {
     lastStatus = '';
@@ -249,9 +277,9 @@ renderer.setAnimationLoop((time) => {
   hudTimer += dt;
   if (hudTimer > 0.18) {
     hudTimer = 0;
-    flightEl.textContent = `Скорость: ${speed.toFixed(0)} м/с · Высота: ${(plane.position.y + 12).toFixed(0)} м`;
+    flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = ['Рельеф v0.5: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = ['Рельеф v0.6: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
