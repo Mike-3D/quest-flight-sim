@@ -32,10 +32,10 @@ function noise(x,z) {
   return THREE.MathUtils.lerp(THREE.MathUtils.lerp(hash(ix,iz),hash(ix+1,iz),u),THREE.MathUtils.lerp(hash(ix,iz+1),hash(ix+1,iz+1),u),v);
 }
 function terrainHeight(x,z) {
-  const hills=18*noise(x/260,z/260)+9*noise(x/95,z/95);
-  const mountain= Math.pow(noise(x/1000+8,z/1000+4),3)*170;
-  const blend=THREE.MathUtils.smoothstep(Math.hypot(x,z-180),280,1000);
-  return -12+blend*(hills+mountain);
+  const hills=65*noise(x/260,z/260)+18*noise(x/95,z/95);
+  const mountain= Math.pow(noise(x/700+8,z/700+4),2)*300;
+  const blend=THREE.MathUtils.smoothstep(Math.hypot(x,z-180),140,420);
+  return -12+blend*(hills+mountain+180*Math.exp(-((x-330)**2+(z+550)**2)/180000));
 }
 const terrainMat=new THREE.MeshLambertMaterial({vertexColors:true});
 const terrainSize=600, segments=40, chunks=new Map();
@@ -142,7 +142,7 @@ let speed = 28;
 let yaw = 0, pitch = 0, roll = 0;
 let lastStatus = '';
 function reset() {
-  plane.position.set(0, 80, 180);
+  plane.position.set(0, 150, 180);
   plane.rotation.set(0, 0, 0);
   speed = 28; yaw = 0; pitch = 0; roll = 0;
   lastStatus = '';
@@ -218,7 +218,7 @@ renderer.setAnimationLoop((time) => {
     hudTimer = 0;
     flightEl.textContent = `Скорость: ${speed.toFixed(0)} м/с · Высота: ${(plane.position.y + 12).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = ['Рельеф v0.4.1: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
