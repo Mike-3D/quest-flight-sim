@@ -203,11 +203,18 @@ const surfaces=[
   {r:new THREE.Vector3(0,0.15,3.6),area:2.0,kind:'tail'},
   {r:new THREE.Vector3(0,0.65,3.5),area:1.25,kind:'fin'}
 ];
+const previousPosition=new THREE.Vector3(), currentPosition=new THREE.Vector3();
+const previousAttitude=new THREE.Quaternion(), currentAttitude=new THREE.Quaternion();
+let accumulator=0, frameMs=0, physicsMs=0, peakFrameMs=0;
+let frameCount=0, frameElapsed=0, fps=0, peakWindow=0;
 function reset(){
   plane.position.set(0,150,180);
   plane.rotation.set(0.065,0,0,'YXZ');
   velocity.set(0,0,-32);omega.set(0,0,0);
   speed=32;power=0.55;alpha=0.065;beta=0;lastStatus='';
+  previousPosition.copy(plane.position);currentPosition.copy(plane.position);
+  previousAttitude.copy(plane.quaternion);currentAttitude.copy(plane.quaternion);
+  accumulator=0;
 }
 reset();
 
@@ -227,16 +234,17 @@ const statsTexture=new THREE.CanvasTexture(statsCanvas);
 statsTexture.colorSpace=THREE.SRGBColorSpace;
 statsTexture.generateMipmaps=false;
 statsTexture.minFilter=THREE.LinearFilter;
-const statsPanel=new THREE.Mesh(new THREE.PlaneGeometry(0.32,0.2133),new THREE.MeshBasicMaterial({map:statsTexture,side:THREE.DoubleSide,toneMapped:false}));
-statsPanel.position.set(0.38,0.68,-0.43);
-statsPanel.rotation.y=-0.30;
-statsPanel.rotation.x=-0.12;
+const statsPanel=new THREE.Mesh(new THREE.PlaneGeometry(0.28,0.187),new THREE.MeshBasicMaterial({map:statsTexture,side:THREE.DoubleSide,toneMapped:false,depthTest:false,depthWrite:false}));
+statsPanel.renderOrder=1000;
+statsPanel.position.set(0.39,0.80,-0.09);
+statsPanel.rotation.y=-0.48;
+statsPanel.rotation.x=-0.10;
 plane.add(statsPanel);
 function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.7.1',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.7.2',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -247,11 +255,13 @@ function drawStats(){
   ];
   ctx.font='35px monospace';
   rows.forEach(([label,value],i)=>{
-    const y=110+i*58;ctx.fillStyle='#8da8ac';ctx.textAlign='left';ctx.fillText(label,32,y);
+    const y=105+i*48;ctx.fillStyle='#8da8ac';ctx.textAlign='left';ctx.fillText(label,32,y);
     ctx.fillStyle='#e2f8ed';ctx.textAlign='right';ctx.fillText(value,736,y);
   });
   ctx.textAlign='left';ctx.font='25px monospace';ctx.fillStyle=lastStatus?'#ffba64':'#8ddbd1';
-  ctx.fillText(lastStatus?'GROUND ASSIST':'6DOF / AIRSPEED (NO WIND)',32,482);
+  ctx.fillText('FPS '+fps.toFixed(0)+' | FRAME '+frameMs.toFixed(1)+' ms',32,420);
+  ctx.fillText('PHYS '+physicsMs.toFixed(2)+' | MAX '+peakFrameMs.toFixed(1)+' ms',32,453);
+  ctx.fillText(lastStatus?'GROUND ASSIST':'6DOF / INTERPOLATED',32,487);
   statsTexture.needsUpdate=true;
 }
 drawStats();
@@ -352,14 +362,33 @@ function physicsStep(dt,controls){
     lastStatus='Защита от земли';
   }else lastStatus='';
 }
-let lastTime=null,hudTimer=0,accumulator=0;
+let lastTime=null,hudTimer=0;
 const physicsDt=1/120;
 renderer.setAnimationLoop((time)=>{
-  const dt=lastTime===null?0:Math.min((time-lastTime)/1000,0.05);
+  const rawDt=lastTime===null?0:Math.max(0,(time-lastTime)/1000);
+  const dt=Math.min(rawDt,0.05);
   lastTime=time;
+  if(rawDt>0){
+    frameMs=frameMs?frameMs*0.9+rawDt*100:rawDt*1000;
+    frameCount++;frameElapsed+=rawDt;peakWindow=Math.max(peakWindow,rawDt*1000);
+    if(frameElapsed>=0.5){fps=frameCount/frameElapsed;peakFrameMs=peakWindow;frameCount=0;frameElapsed=0;peakWindow=0;}
+  }
+  // Restore the authoritative physics state before sampling inputs or stepping.
+  plane.position.copy(currentPosition);plane.quaternion.copy(currentAttitude);
   const controls=getControls();
   accumulator+=dt;
-  while(accumulator>=physicsDt){physicsStep(physicsDt,controls);accumulator-=physicsDt;}
+  const startPhysics=performance.now();
+  while(accumulator>=physicsDt){
+    previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
+    physicsStep(physicsDt,controls);
+    currentPosition.copy(plane.position);currentAttitude.copy(plane.quaternion);
+    accumulator-=physicsDt;
+  }
+  physicsMs=physicsMs*0.9+(performance.now()-startPhysics)*0.1;
+  // Render an interpolated pose only; physics never integrates this pose.
+  const blend=THREE.MathUtils.clamp(accumulator/physicsDt,0,1);
+  plane.position.lerpVectors(previousPosition,currentPosition,blend);
+  plane.quaternion.slerpQuaternions(previousAttitude,currentAttitude,blend);
   updateTerrain(plane.position.x, plane.position.z);
   hudTimer += dt;
   if (hudTimer > 0.18) {
@@ -367,12 +396,12 @@ renderer.setAnimationLoop((time)=>{
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = ['Физика 6DOF v0.7.1: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = ['Физика 6DOF v0.7.2: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
-renderer.xr.addEventListener('sessionstart', () => { lastTime = null; hud.classList.add('hidden'); document.getElementById('reset').style.display='none'; });
-renderer.xr.addEventListener('sessionend', () => { lastTime = null; hud.classList.remove('hidden'); document.getElementById('reset').style.display=''; });
+renderer.xr.addEventListener('sessionstart', () => { lastTime = null; accumulator=0; previousPosition.copy(currentPosition); previousAttitude.copy(currentAttitude); hud.classList.add('hidden'); document.getElementById('reset').style.display='none'; });
+renderer.xr.addEventListener('sessionend', () => { lastTime = null; accumulator=0; previousPosition.copy(currentPosition); previousAttitude.copy(currentAttitude); hud.classList.remove('hidden'); document.getElementById('reset').style.display=''; });
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
