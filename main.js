@@ -186,18 +186,28 @@ addEventListener('keyup', e => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
 document.getElementById('reset').addEventListener('click', reset);
 
-let speed = 32;
-let power = 0.55, climbAngle = 0;
-let rollRate=0, pitchRate=0;
-const mass=550, wingArea=12, gravity=9.81;
-let yaw = 0, pitch = 0, roll = 0;
-let lastStatus = '';
-function reset() {
-  plane.position.set(0, 150, 180);
-  plane.rotation.set(0, 0, 0);
-  speed = 32; power=0.55; climbAngle=0; rollRate=0; pitchRate=0; yaw = 0; pitch = 0.065; roll = 0;
-  plane.rotation.set(pitch,yaw,roll,'YXZ');
-  lastStatus = '';
+// SI units, body axes: +X right, +Y up, -Z forward.
+let speed=32, power=0.55, lastStatus='', alpha=0, beta=0;
+const mass=550, gravity=9.81;
+const velocity=new THREE.Vector3(), omega=new THREE.Vector3();
+const inertia=new THREE.Vector3(1250,2200,850);
+const force=new THREE.Vector3(), torque=new THREE.Vector3();
+const flow=new THREE.Vector3(), surfaceVelocity=new THREE.Vector3();
+const surfaceForce=new THREE.Vector3(), moment=new THREE.Vector3();
+const worldForce=new THREE.Vector3(), inverseAttitude=new THREE.Quaternion();
+const deltaQ=new THREE.Quaternion(), spinAxis=new THREE.Vector3();
+const angularMomentum=new THREE.Vector3(), gyro=new THREE.Vector3();
+const surfaces=[
+  {r:new THREE.Vector3(-2.5,0,0.12),area:6,kind:'left'},
+  {r:new THREE.Vector3( 2.5,0,0.12),area:6,kind:'right'},
+  {r:new THREE.Vector3(0,0.15,3.6),area:2.0,kind:'tail'},
+  {r:new THREE.Vector3(0,0.65,3.5),area:1.25,kind:'fin'}
+];
+function reset(){
+  plane.position.set(0,150,180);
+  plane.rotation.set(0.065,0,0,'YXZ');
+  velocity.set(0,0,-32);omega.set(0,0,0);
+  speed=32;power=0.55;alpha=0.065;beta=0;lastStatus='';
 }
 reset();
 
@@ -241,70 +251,85 @@ function getControls() {
   resetWasDown = resetDown;
   return { steerX, steerY, throttle, controllers };
 }
-const forward = new THREE.Vector3();
-const localFlow=new THREE.Vector3(), inverseAttitude=new THREE.Quaternion();
-const bodyUp=new THREE.Vector3(), turnAxis=new THREE.Vector3(0,1,0);
-const attitudeEuler=new THREE.Euler(0,0,0,'YXZ');
-function angleOfAttack(){
-  localFlow.set(-Math.sin(yaw)*Math.cos(climbAngle),Math.sin(climbAngle),-Math.cos(yaw)*Math.cos(climbAngle));
-  localFlow.applyQuaternion(inverseAttitude.copy(plane.quaternion).invert());
-  return Math.atan2(-localFlow.y,-localFlow.z);
-}
-let lastTime = null;
-let hudTimer = 0;
-renderer.setAnimationLoop((time) => {
-  const dt = lastTime === null ? 0 : Math.min((time - lastTime) / 1000, 0.05);
-  lastTime = time;
-  const controls = getControls();
+// Each aerodynamic surface sees its own local airspeed, including rotation.
+function physicsStep(dt,controls){
   power=THREE.MathUtils.clamp(power+controls.throttle*dt*0.35,0,1);
-  // Neutral controls remove pilot moments, not aircraft attitude.
-  const authority=THREE.MathUtils.clamp((speed/32)**2,0.15,2.2);
-  const alphaNow=angleOfAttack();
-  const rollAccel=-controls.steerX*2.0*authority-2.8*authority*rollRate-0.025*Math.sin(roll);
-  const pitchAccel=controls.steerY*0.85*authority-2.5*authority*pitchRate-0.65*authority*(alphaNow-0.065);
-  rollRate+=rollAccel*dt;
-  pitchRate+=pitchAccel*dt;
-  // Apply pilot rotation around aircraft body axes, not world axes.
-  plane.rotateX(pitchRate*dt);
-  plane.rotateZ(rollRate*dt);
-  attitudeEuler.setFromQuaternion(plane.quaternion,'YXZ');
-  roll=attitudeEuler.z;
-  pitch=attitudeEuler.x;
-  const alpha=angleOfAttack();
-  const stall=1-0.65*THREE.MathUtils.smoothstep(Math.abs(alpha),0.24,0.48);
-  const cl=THREE.MathUtils.clamp(0.32+4.5*alpha,-0.9,1.45)*stall;
-  const q=0.5*1.225*speed*speed;
-  const lift=q*wingArea*cl;
-  const drag=q*wingArea*(0.035+0.065*cl*cl+0.12*(1-stall));
-  const thrust=power*1500;
-  speed=THREE.MathUtils.clamp(speed+(thrust*Math.cos(alpha)-drag-mass*gravity*Math.sin(climbAngle))/mass*dt,8,75);
-  // Resolve lift along the banked aircraft's up direction relative to flight path.
-  bodyUp.set(0,1,0).applyQuaternion(plane.quaternion);
-  const verticalLift=bodyUp.y*Math.cos(climbAngle)+Math.sin(climbAngle)*(bodyUp.x*Math.sin(yaw)+bodyUp.z*Math.cos(yaw));
-  const lateralLift=-bodyUp.x*Math.cos(yaw)+bodyUp.z*Math.sin(yaw);
-  const turnRate=lift*lateralLift/(mass*Math.max(speed*Math.cos(climbAngle),8));
-  climbAngle=THREE.MathUtils.clamp(climbAngle+(lift*verticalLift+thrust*Math.sin(alpha)-mass*gravity*Math.cos(climbAngle))/(mass*Math.max(speed,8))*dt,-1.2,1.2);
-  yaw+=turnRate*dt;
-  plane.rotateOnWorldAxis(turnAxis,turnRate*dt);
-  forward.set(-Math.sin(yaw)*Math.cos(climbAngle),Math.sin(climbAngle),-Math.cos(yaw)*Math.cos(climbAngle));
-  plane.position.addScaledVector(forward,speed*dt);
-  const minimumY = terrainHeight(plane.position.x, plane.position.z) + 15;
-  if (plane.position.y < minimumY) {
-    plane.position.y = minimumY;
-    if(pitch<0.10) plane.rotateOnWorldAxis(new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw)),Math.min(0.10-pitch,dt*0.5));
-    pitchRate=Math.max(pitchRate,0);
-    climbAngle=Math.max(climbAngle,0);
-    lastStatus = 'Низкая высота — автоматическая коррекция';
-  } else {
-    lastStatus = '';
+  inverseAttitude.copy(plane.quaternion).invert();
+  flow.copy(velocity).applyQuaternion(inverseAttitude);
+  alpha=Math.atan2(-flow.y,-flow.z);
+  beta=Math.atan2(flow.x,Math.hypot(flow.y,flow.z));
+  // Propeller thrust always follows the aircraft longitudinal axis.
+  const thrust=power*1500*THREE.MathUtils.clamp(1.25-Math.max(0,-flow.z)/150,0.35,1.25);
+  force.set(0,0,-thrust);torque.set(0,0,0);
+  for(const s of surfaces){
+    surfaceVelocity.crossVectors(omega,s.r).add(flow);
+    const fin=s.kind==='fin', tail=s.kind==='tail';
+    const u=-surfaceVelocity.z, v=fin?surfaceVelocity.x:-surfaceVelocity.y;
+    const v2=u*u+v*v;
+    if(v2<0.01)continue;
+    const a=Math.atan2(v,u);
+    let incidence=0, slope=4.5, maxCl=1.45;
+    if(tail){incidence=-0.035-controls.steerY*0.22;slope=3.5;maxCl=1.1;}
+    else if(fin){slope=3.0;maxCl=1.1;}
+    else incidence=0.07+(s.kind==='left'?-1:1)*controls.steerX*0.09;
+    const effective=a+incidence;
+    const separated=THREE.MathUtils.smoothstep(Math.abs(effective),0.24,0.55);
+    const cl=THREE.MathUtils.clamp(slope*effective,-maxCl,maxCl)*(1-0.75*separated);
+    const cd=0.018+0.075*cl*cl+0.7*separated;
+    const q=0.5*1.225*v2*s.area, inv=1/Math.sqrt(v2);
+    // Lift perpendicular to the local flow; drag opposite it.
+    if(fin)surfaceForce.set((-cl*u-cd*v)*q*inv,0,(-cl*v+cd*u)*q*inv);
+    else surfaceForce.set(0,(cl*u+cd*v)*q*inv,(-cl*v+cd*u)*q*inv);
+    force.add(surfaceForce);
+    torque.add(moment.crossVectors(s.r,surfaceForce));
   }
+  // Fuselage drag and lateral resistance. No artificial heading lock.
+  force.x-=0.5*1.225*2.1*flow.x*Math.abs(flow.x);
+  force.y-=0.5*1.225*0.8*flow.y*Math.abs(flow.y);
+  force.z-=0.5*1.225*0.45*flow.z*Math.abs(flow.z);
+  // Modest additional damping for unresolved airframe geometry.
+  const damping=Math.min(2.5,flow.length()/32);
+  torque.x-=250*damping*omega.x;
+  torque.y-=220*damping*omega.y;
+  torque.z-=180*damping*omega.z;
+  angularMomentum.copy(omega).multiply(inertia);
+  gyro.crossVectors(omega,angularMomentum);
+  torque.sub(gyro).divide(inertia);
+  omega.addScaledVector(torque,dt);
+  const rate=omega.length();
+  if(rate>1e-8){
+    spinAxis.copy(omega).multiplyScalar(1/rate);
+    deltaQ.setFromAxisAngle(spinAxis,rate*dt);
+    plane.quaternion.multiply(deltaQ).normalize();
+  }
+  worldForce.copy(force).applyQuaternion(plane.quaternion);
+  worldForce.y-=mass*gravity;
+  velocity.addScaledVector(worldForce,dt/mass);
+  plane.position.addScaledVector(velocity,dt);
+  speed=velocity.length();
+  // Temporary terrain protection, not a landing/contact model.
+  const minimumY=terrainHeight(plane.position.x,plane.position.z)+15;
+  if(plane.position.y<minimumY){
+    plane.position.y=minimumY;
+    if(velocity.y<0)velocity.y=0;
+    lastStatus='Защита от земли';
+  }else lastStatus='';
+}
+let lastTime=null,hudTimer=0,accumulator=0;
+const physicsDt=1/120;
+renderer.setAnimationLoop((time)=>{
+  const dt=lastTime===null?0:Math.min((time-lastTime)/1000,0.05);
+  lastTime=time;
+  const controls=getControls();
+  accumulator+=dt;
+  while(accumulator>=physicsDt){physicsStep(physicsDt,controls);accumulator-=physicsDt;}
   updateTerrain(plane.position.x, plane.position.z);
   hudTimer += dt;
   if (hudTimer > 0.18) {
     hudTimer = 0;
-    flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
+    flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = ['Рельеф v0.6.2: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = ['Физика 6DOF v0.7: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
