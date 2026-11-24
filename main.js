@@ -24,31 +24,51 @@ const sun = new THREE.DirectionalLight(0xfff2d4, 2.0);
 sun.position.set(-200, 400, -250);
 scene.add(sun);
 
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(12000, 12000),
-  new THREE.MeshLambertMaterial({ color: 0x6fba68 })
-);
-ground.rotation.x = -Math.PI / 2;
-ground.position.y = -12;
-scene.add(ground);
-
-const stripeMat = new THREE.MeshLambertMaterial({ color: 0x9bd48b, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
-for (let i = -12; i <= 12; i++) {
-  const line = new THREE.Mesh(new THREE.BoxGeometry(6, 0.15, 2500), stripeMat);
-  line.position.set(i * 110, -11.35, -550);
-  scene.add(line);
+// Continuous procedural terrain, sampled consistently for geometry and clearance.
+function hash(x,z) { const n=Math.sin(x*127.1+z*311.7)*43758.5453; return n-Math.floor(n); }
+function noise(x,z) {
+  const ix=Math.floor(x), iz=Math.floor(z); let u=x-ix,v=z-iz;
+  u=u*u*(3-2*u); v=v*v*(3-2*v);
+  return THREE.MathUtils.lerp(THREE.MathUtils.lerp(hash(ix,iz),hash(ix+1,iz),u),THREE.MathUtils.lerp(hash(ix,iz+1),hash(ix+1,iz+1),u),v);
 }
-const hillMat = new THREE.MeshLambertMaterial({ color: 0x527b56, flatShading: true });
-const hillGeometry = new THREE.ConeGeometry(1, 1, 5);
-for (let i = 0; i < 55; i++) {
-  const angle = i * 2.39996;
-  const radius = 320 + (i % 11) * 90;
-  const height = 55 + (i * 37) % 160;
-  const hill = new THREE.Mesh(hillGeometry, hillMat);
-  hill.scale.set(65 + (i % 4) * 22, height, 65 + (i % 4) * 22);
-  hill.position.set(Math.cos(angle) * radius, -12 + height / 2, Math.sin(angle) * radius - 700);
-  scene.add(hill);
+function terrainHeight(x,z) {
+  const hills=18*noise(x/260,z/260)+9*noise(x/95,z/95);
+  const mountain= Math.pow(noise(x/1000+8,z/1000+4),3)*170;
+  const blend=THREE.MathUtils.smoothstep(Math.hypot(x,z-180),280,1000);
+  return -12+blend*(hills+mountain);
 }
+const terrainMat=new THREE.MeshLambertMaterial({vertexColors:true});
+const terrainSize=600, segments=40, chunks=new Map();
+const green=new THREE.Color(0x659b49), light=new THREE.Color(0x9bb86a), rock=new THREE.Color(0x8b8977);
+function makeChunk(cx,cz) {
+  const g=new THREE.PlaneGeometry(terrainSize,terrainSize,segments,segments);
+  g.rotateX(-Math.PI/2);
+  const p=g.attributes.position, colors=new Float32Array(p.count*3), c=new THREE.Color();
+  for(let i=0;i<p.count;i++){
+    const x=p.getX(i)+cx*terrainSize,z=p.getZ(i)+cz*terrainSize,h=terrainHeight(x,z);
+    p.setY(i,h);
+    const field=noise(x/180+12,z/180+7);
+    c.copy(green).lerp(light,field).lerp(rock,THREE.MathUtils.smoothstep(h,55,120));
+    c.toArray(colors,i*3);
+  }
+  g.setAttribute('color',new THREE.BufferAttribute(colors,3));g.computeVertexNormals();
+  const m=new THREE.Mesh(g,terrainMat);m.position.set(cx*terrainSize,0,cz*terrainSize);scene.add(m);return m;
+}
+let lastChunk='';
+function updateTerrain(x,z){
+  const cx=Math.round(x/terrainSize),cz=Math.round(z/terrainSize),center=cx+','+cz;
+  if(center===lastChunk)return;lastChunk=center;
+  const needed=new Set();
+  for(let i=-3;i<=3;i++)for(let j=-3;j<=3;j++){
+    const k=(cx+i)+','+(cz+j);needed.add(k);
+    if(!chunks.has(k))chunks.set(k,makeChunk(cx+i,cz+j));
+  }
+  for(const [k,m] of chunks)if(!needed.has(k)){scene.remove(m);m.geometry.dispose();chunks.delete(k);}
+}
+updateTerrain(0,180);
+// Small grass airstrip in the flat starting valley.
+const runway=new THREE.Mesh(new THREE.PlaneGeometry(22,260),new THREE.MeshLambertMaterial({color:0x526d39,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-4}));
+runway.rotation.x=-Math.PI/2;runway.position.set(0,-11.65,100);scene.add(runway);
 
 const plane = new THREE.Group();
 scene.add(plane);
@@ -184,17 +204,15 @@ renderer.setAnimationLoop((time) => {
   plane.rotation.set(pitch, yaw, roll);
   forward.set(0, 0, -1).applyQuaternion(plane.quaternion);
   plane.position.addScaledVector(forward, speed * dt);
-  if (plane.position.y < 3) {
-    plane.position.y = 3;
+  const minimumY = terrainHeight(plane.position.x, plane.position.z) + 15;
+  if (plane.position.y < minimumY) {
+    plane.position.y = minimumY;
     pitch = Math.max(pitch, 0.08);
     lastStatus = 'Низкая высота — автоматическая коррекция';
   } else {
     lastStatus = '';
   }
-  // Tether world origin to avoid precision issues during lengthy flights.
-  if (Math.abs(plane.position.x) > 2500 || Math.abs(plane.position.z) > 2500) {
-    plane.position.x *= 0.2; plane.position.z *= 0.2;
-  }
+  updateTerrain(plane.position.x, plane.position.z);
   hudTimer += dt;
   if (hudTimer > 0.18) {
     hudTimer = 0;
