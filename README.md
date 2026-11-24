@@ -1,4 +1,4 @@
-# Quest Flight Sim — v0.1
+# Quest Flight Sim — v0.1.1
 
 A tiny WebXR flight experiment for Meta Quest 3 built with Three.js, deployed as a static site on GitHub Pages. No build step required.
 
@@ -30,3 +30,5 @@ This is an arcade prototype, not a physical flight simulation. Head movement and
 ## Version
 
 v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls and reset.
+
+- v0.1.1: raised ground stripes and improved depth precision to reduce flicker.

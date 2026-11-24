@@ -5,7 +5,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x84c9fa);
 scene.fog = new THREE.FogExp2(0x84c9fa, 0.0008);
 
-const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 4500);
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.5, 4500);
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
 renderer.setSize(innerWidth, innerHeight);
@@ -33,7 +33,7 @@ scene.add(ground);
 const stripeMat = new THREE.MeshLambertMaterial({ color: 0x9bd48b });
 for (let i = -12; i <= 12; i++) {
   const line = new THREE.Mesh(new THREE.BoxGeometry(6, 0.15, 2500), stripeMat);
-  line.position.set(i * 110, -11.85, -550);
+  line.position.set(i * 110, -11.35, -550);
   scene.add(line);
 }
 const hillMat = new THREE.MeshLambertMaterial({ color: 0x527b56, flatShading: true });
