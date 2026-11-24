@@ -188,13 +188,14 @@ document.getElementById('reset').addEventListener('click', reset);
 
 let speed = 32;
 let power = 0.55, climbAngle = 0;
+let rollRate=0, pitchRate=0;
 const mass=550, wingArea=12, gravity=9.81;
 let yaw = 0, pitch = 0, roll = 0;
 let lastStatus = '';
 function reset() {
   plane.position.set(0, 150, 180);
   plane.rotation.set(0, 0, 0);
-  speed = 32; power=0.55; climbAngle=0; yaw = 0; pitch = 0.065; roll = 0;
+  speed = 32; power=0.55; climbAngle=0; rollRate=0; pitchRate=0; yaw = 0; pitch = 0.065; roll = 0;
   lastStatus = '';
 }
 reset();
@@ -247,8 +248,17 @@ renderer.setAnimationLoop((time) => {
   lastTime = time;
   const controls = getControls();
   power=THREE.MathUtils.clamp(power+controls.throttle*dt*0.35,0,1);
-  pitch=THREE.MathUtils.clamp(pitch-controls.steerY*dt*0.38,-0.45,0.45);
-  roll=THREE.MathUtils.damp(roll,-controls.steerX*0.55,2.5,dt);
+  // Neutral controls remove pilot moments, not aircraft attitude.
+  const authority=THREE.MathUtils.clamp((speed/32)**2,0.15,2.2);
+  const alphaNow=pitch-climbAngle;
+  const rollAccel=-controls.steerX*2.0*authority-2.8*authority*rollRate-0.025*Math.sin(roll);
+  const pitchAccel=-controls.steerY*0.85*authority-2.5*authority*pitchRate-0.65*authority*(alphaNow-0.065);
+  rollRate+=rollAccel*dt;
+  pitchRate+=pitchAccel*dt;
+  roll=THREE.MathUtils.clamp(roll+rollRate*dt,-1.22,1.22);
+  pitch=THREE.MathUtils.clamp(pitch+pitchRate*dt,-0.65,0.65);
+  if(Math.abs(roll)>=1.22 && roll*rollRate>0)rollRate=0;
+  if(Math.abs(pitch)>=0.65 && pitch*pitchRate>0)pitchRate=0;
   yaw+=gravity*Math.tan(roll)/Math.max(speed,15)*dt;
   // Simplified point-mass aerodynamic model; no wind or rotational inertia.
   const alpha=pitch-climbAngle;
@@ -268,6 +278,7 @@ renderer.setAnimationLoop((time) => {
   if (plane.position.y < minimumY) {
     plane.position.y = minimumY;
     pitch = Math.max(pitch, 0.10);
+    pitchRate=Math.max(pitchRate,0);
     climbAngle=Math.max(climbAngle,0);
     lastStatus = 'Низкая высота — автоматическая коррекция';
   } else {
@@ -279,7 +290,7 @@ renderer.setAnimationLoop((time) => {
     hudTimer = 0;
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = ['Рельеф v0.6: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = ['Рельеф v0.6.1: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
