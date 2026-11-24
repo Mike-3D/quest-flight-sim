@@ -1,16 +1,18 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.181.2/build/three.module.js';
 import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.181.2/examples/jsm/webxr/VRButton.js';
 
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.181.2/examples/jsm/loaders/GLTFLoader.js';
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x84c9fa);
 scene.fog = new THREE.FogExp2(0x84c9fa, 0.0008);
 
-const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.5, 4500);
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.08, 4500);
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
-renderer.xr.setReferenceSpaceType('local-floor');
+renderer.xr.setReferenceSpaceType('local');
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer, {
@@ -30,7 +32,7 @@ ground.rotation.x = -Math.PI / 2;
 ground.position.y = -12;
 scene.add(ground);
 
-const stripeMat = new THREE.MeshLambertMaterial({ color: 0x9bd48b });
+const stripeMat = new THREE.MeshLambertMaterial({ color: 0x9bd48b, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
 for (let i = -12; i <= 12; i++) {
   const line = new THREE.Mesh(new THREE.BoxGeometry(6, 0.15, 2500), stripeMat);
   line.position.set(i * 110, -11.35, -550);
@@ -75,6 +77,30 @@ const flightEl = document.getElementById('flight');
 const inputEl = document.getElementById('input');
 const messageEl = document.getElementById('message');
 const hud = document.getElementById('hud');
+let modelStatus = 'Загрузка кабины…';
+// GLB is authored facing +Z. Rotate to match the aircraft's -Z flight axis.
+const importedCockpit = new THREE.Group();
+importedCockpit.rotation.y = Math.PI;
+// Align the left pilot's eye point with the camera rig.
+importedCockpit.position.set(0.235, 0.38, 0.27);
+new GLTFLoader().load('./assets/models/Cockpit_01.glb', gltf => {
+  importedCockpit.add(gltf.scene);
+  // The supplied shell and seats contain one half only. Mirror those pieces.
+  for (const name of ['Cockpit', 'Chair01', 'Chair02']) {
+    const original = gltf.scene.getObjectByName(name);
+    if (!original) continue;
+    const mirror = new THREE.Group();
+    mirror.scale.x = -1;
+    mirror.add(original.clone(true));
+    gltf.scene.add(mirror);
+  }
+  plane.add(importedCockpit);
+  cockpit.visible = false;
+  modelStatus = 'Кабина GLB загружена';
+}, undefined, error => {
+  console.error('Cockpit load failed', error);
+  modelStatus = 'Ошибка загрузки GLB — резервная кабина';
+});
 const keys = new Set();
 addEventListener('keydown', e => {
   keys.add(e.code);
@@ -166,7 +192,7 @@ renderer.setAnimationLoop((time) => {
     hudTimer = 0;
     flightEl.textContent = `Скорость: ${speed.toFixed(0)} м/с · Высота: ${(plane.position.y + 12).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = lastStatus;
+    messageEl.textContent = [modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
