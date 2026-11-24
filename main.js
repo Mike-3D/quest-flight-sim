@@ -85,6 +85,14 @@ importedCockpit.rotation.y = Math.PI;
 importedCockpit.position.set(0.235, 0.38, 0.27);
 new GLTFLoader().load('./assets/models/Cockpit_01.glb', gltf => {
   importedCockpit.add(gltf.scene);
+  // Exterior uses exactly the same authored coordinate system and transform.
+  new GLTFLoader().load('./assets/models/Exterior_01.glb', exterior => {
+    importedCockpit.add(exterior.scene);
+    modelStatus = 'Кабина и экстерьер GLB загружены';
+  }, undefined, error => {
+    console.error('Exterior load failed', error);
+    modelStatus = 'Кабина загружена · ошибка экстерьера';
+  });
   // The supplied shell and seats contain one half only. Mirror those pieces.
   for (const name of ['Cockpit', 'Chair01', 'Chair02']) {
     const original = gltf.scene.getObjectByName(name);
