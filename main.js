@@ -190,7 +190,7 @@ document.getElementById('reset').addEventListener('click', reset);
 let speed=32, power=0.55, lastStatus='', alpha=0, beta=0;
 const mass=550, gravity=9.81;
 const velocity=new THREE.Vector3(), omega=new THREE.Vector3();
-const inertia=new THREE.Vector3(1250,2200,850);
+const inertia=new THREE.Vector3(2000,2200,1450);
 const force=new THREE.Vector3(), torque=new THREE.Vector3();
 const flow=new THREE.Vector3(), surfaceVelocity=new THREE.Vector3();
 const surfaceForce=new THREE.Vector3(), moment=new THREE.Vector3();
@@ -236,7 +236,7 @@ statsTexture.generateMipmaps=false;
 statsTexture.minFilter=THREE.LinearFilter;
 const statsPanel=new THREE.Mesh(new THREE.PlaneGeometry(0.28,0.187),new THREE.MeshBasicMaterial({map:statsTexture,side:THREE.DoubleSide,toneMapped:false,depthTest:false,depthWrite:false}));
 statsPanel.renderOrder=1000;
-statsPanel.position.set(0.39,0.80,-0.09);
+statsPanel.position.set(0.39,0.75,-0.09);
 statsPanel.rotation.y=-0.48;
 statsPanel.rotation.x=-0.10;
 plane.add(statsPanel);
@@ -244,7 +244,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.7.2',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.7.3',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -396,7 +396,7 @@ renderer.setAnimationLoop((time)=>{
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = ['Физика 6DOF v0.7.2: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = ['Физика 6DOF v0.7.3: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });

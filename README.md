@@ -54,3 +54,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.7.1: corrected aileron direction, lowered terrain peaks, aircraft-fixed cockpit telemetry display (TAS, AGL, vertical speed, power, AoA, slip).
 
 - v0.7.2: interpolated render pose from fixed 120 Hz physics snapshots; cockpit display repositioned with depth occlusion disabled for debugging; frame-rate and physics CPU timings.
+
+- v0.7.3: lowered cockpit telemetry by 5 cm; increased pitch inertia from 1250 to 2000 and roll inertia from 850 to 1450 kg m², keeping yaw inertia and aerodynamic coefficients unchanged.
