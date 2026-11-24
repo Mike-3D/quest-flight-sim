@@ -46,3 +46,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.6: procedural river valley and road surface, simplified point-mass lift, drag, thrust, gravity, banked turns and stall lift reduction. Terrain clearance assist remains enabled.
 
 - v0.6.1: angular-rate dynamics, airspeed-dependent control authority, aerodynamic damping and angle-of-attack stability; neutral stick no longer commands level bank.
+
+- v0.6.2: reversed elevator input, quaternion body-axis rotations, body-relative angle of attack and banked lift projection.
