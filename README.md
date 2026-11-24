@@ -50,3 +50,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.6.2: reversed elevator input, quaternion body-axis rotations, body-relative angle of attack and banked lift projection.
 
 - v0.7: rigid body 6DOF, world velocity, quaternion attitude, individual wing and tail aerodynamic forces and torques, propeller thrust, gravity, fixed 120 Hz physics. Experimental coefficients; ground protection retained.
+
+- v0.7.1: corrected aileron direction, lowered terrain peaks, aircraft-fixed cockpit telemetry display (TAS, AGL, vertical speed, power, AoA, slip).

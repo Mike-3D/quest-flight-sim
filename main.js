@@ -32,10 +32,10 @@ function noise(x,z) {
   return THREE.MathUtils.lerp(THREE.MathUtils.lerp(hash(ix,iz),hash(ix+1,iz),u),THREE.MathUtils.lerp(hash(ix,iz+1),hash(ix+1,iz+1),u),v);
 }
 function terrainHeight(x,z) {
-  const hills=65*noise(x/260,z/260)+18*noise(x/95,z/95);
-  const mountain= Math.pow(noise(x/700+8,z/700+4),2)*300;
+  const hills=52*noise(x/260,z/260)+15*noise(x/95,z/95);
+  const mountain= Math.pow(noise(x/700+8,z/700+4),2)*220;
   const blend=THREE.MathUtils.smoothstep(Math.hypot(x,z-180),140,420);
-  const raw=-12+blend*(hills+mountain+180*Math.exp(-((x-330)**2+(z+550)**2)/180000));
+  const raw=-12+blend*(hills+mountain+125*Math.exp(-((x-330)**2+(z+550)**2)/180000));
   const riverX=420+180*Math.sin(z/430)+70*Math.sin(z/170);
   const valley=1-THREE.MathUtils.smoothstep(Math.abs(x-riverX),12,160);
   return THREE.MathUtils.lerp(raw,-15,valley);
@@ -219,6 +219,43 @@ cameraRig.position.set(0, 0.9, 0.25);
 cameraRig.add(camera);
 camera.position.set(0, 0, 0);
 camera.rotation.set(0, 0, 0);
+ // Aircraft-fixed diagnostic display, independent of headset orientation.
+const statsCanvas=document.createElement('canvas');
+statsCanvas.width=768;statsCanvas.height=512;
+const statsCtx=statsCanvas.getContext('2d');
+const statsTexture=new THREE.CanvasTexture(statsCanvas);
+statsTexture.colorSpace=THREE.SRGBColorSpace;
+statsTexture.generateMipmaps=false;
+statsTexture.minFilter=THREE.LinearFilter;
+const statsPanel=new THREE.Mesh(new THREE.PlaneGeometry(0.32,0.2133),new THREE.MeshBasicMaterial({map:statsTexture,side:THREE.DoubleSide,toneMapped:false}));
+statsPanel.position.set(0.38,0.68,-0.43);
+statsPanel.rotation.y=-0.30;
+statsPanel.rotation.x=-0.12;
+plane.add(statsPanel);
+function drawStats(){
+  const ctx=statsCtx;
+  ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
+  ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.7.1',32,54);
+  const rows=[
+    ['TAS',(speed*3.6).toFixed(0)+' km/h'],
+    ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
+    ['V/S',(velocity.y>=0?'+':'')+velocity.y.toFixed(1)+' m/s'],
+    ['POWER',(power*100).toFixed(0)+' %'],
+    ['AoA',(alpha*180/Math.PI).toFixed(1)+' deg'],
+    ['SLIP',(beta*180/Math.PI).toFixed(1)+' deg']
+  ];
+  ctx.font='35px monospace';
+  rows.forEach(([label,value],i)=>{
+    const y=110+i*58;ctx.fillStyle='#8da8ac';ctx.textAlign='left';ctx.fillText(label,32,y);
+    ctx.fillStyle='#e2f8ed';ctx.textAlign='right';ctx.fillText(value,736,y);
+  });
+  ctx.textAlign='left';ctx.font='25px monospace';ctx.fillStyle=lastStatus?'#ffba64':'#8ddbd1';
+  ctx.fillText(lastStatus?'GROUND ASSIST':'6DOF / AIRSPEED (NO WIND)',32,482);
+  statsTexture.needsUpdate=true;
+}
+drawStats();
+
 
 function axisValue(gamepad, preferred, fallback) {
   const a = gamepad.axes;
@@ -271,7 +308,7 @@ function physicsStep(dt,controls){
     let incidence=0, slope=4.5, maxCl=1.45;
     if(tail){incidence=-0.035-controls.steerY*0.22;slope=3.5;maxCl=1.1;}
     else if(fin){slope=3.0;maxCl=1.1;}
-    else incidence=0.07+(s.kind==='left'?-1:1)*controls.steerX*0.09;
+    else incidence=0.07+(s.kind==='left'?1:-1)*controls.steerX*0.09;
     const effective=a+incidence;
     const separated=THREE.MathUtils.smoothstep(Math.abs(effective),0.24,0.55);
     const cl=THREE.MathUtils.clamp(slope*effective,-maxCl,maxCl)*(1-0.75*separated);
@@ -327,9 +364,10 @@ renderer.setAnimationLoop((time)=>{
   hudTimer += dt;
   if (hudTimer > 0.18) {
     hudTimer = 0;
+    drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = ['Физика 6DOF v0.7: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = ['Физика 6DOF v0.7.1: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
