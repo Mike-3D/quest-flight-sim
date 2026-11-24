@@ -38,6 +38,39 @@ function terrainHeight(x,z) {
   return -12+blend*(hills+mountain+180*Math.exp(-((x-330)**2+(z+550)**2)/180000));
 }
 const terrainMat=new THREE.MeshLambertMaterial({vertexColors:true});
+ // World-space procedural farmland; no additional textures or geometry.
+terrainMat.onBeforeCompile = shader => {
+  shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vTerrainWorld;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvTerrainWorld = (modelMatrix * vec4(position, 1.0)).xyz;');
+  shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `#include <common>
+varying vec3 vTerrainWorld;
+float landHash(vec2 p) { return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+float landNoise(vec2 p) {
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  return mix(mix(landHash(i),landHash(i+vec2(1,0)),f.x),mix(landHash(i+vec2(0,1)),landHash(i+vec2(1,1)),f.x),f.y);
+}
+`).replace('#include <color_fragment>', `#include <color_fragment>
+vec2 p=vTerrainWorld.xz;
+vec2 q=mat2(0.94,-0.342,0.342,0.94)*p;
+q+=vec2(landNoise(p/310.0),landNoise(p/290.0+17.0))*35.0;
+vec2 cell=q/vec2(145.0,105.0);
+vec2 id=floor(cell), uv=fract(cell);
+float r=landHash(id);
+vec3 pasture=mix(vec3(0.72,0.91,0.56),vec3(1.15,1.08,0.66),r);
+pasture=mix(pasture,vec3(0.66,0.48,0.25),smoothstep(0.77,0.93,r));
+vec2 edge=min(uv,1.0-uv)*vec2(145.0,105.0);
+float d=min(edge.x,edge.y);
+float border=smoothstep(0.6,2.4+fwidth(d),d);
+float farm=1.0-smoothstep(35.0,100.0,vTerrainWorld.y);
+float rows=sin(q.y*2.0)*0.5+0.5;
+float rowDetail=(1.0-smoothstep(0.3,1.5,fwidth(q.y)))*0.12;
+vec3 fieldColor=pasture*(0.94+rows*rowDetail);
+fieldColor=mix(vec3(0.54,0.65,0.38),fieldColor,border);
+float detail=(landNoise(p*0.65)-0.5)*0.22*(1.0-smoothstep(0.4,2.0,length(fwidth(p))));
+diffuseColor.rgb*=mix(vec3(1.0),fieldColor,farm)*(1.0+detail);
+`);
+};
+
 const terrainSize=600, segments=40, chunks=new Map();
 const green=new THREE.Color(0x659b49), light=new THREE.Color(0x9bb86a), rock=new THREE.Color(0x8b8977);
 function makeChunk(cx,cz) {
@@ -218,7 +251,7 @@ renderer.setAnimationLoop((time) => {
     hudTimer = 0;
     flightEl.textContent = `Скорость: ${speed.toFixed(0)} м/с · Высота: ${(plane.position.y + 12).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = ['Рельеф v0.4.1: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = ['Рельеф v0.5: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
