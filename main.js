@@ -490,7 +490,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.3',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.4',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -507,7 +507,7 @@ function drawStats(){
   ctx.textAlign='left';ctx.font='25px monospace';ctx.fillStyle=lastStatus?'#ffba64':'#8ddbd1';
   ctx.fillText('FPS '+fps.toFixed(0)+' | MAX '+peakFrameMs.toFixed(1)+' ms',32,420);
   ctx.fillText('PHYS '+physicsMs.toFixed(2)+' | LAND '+terrainMs.toFixed(2)+' ms',32,453);
-  ctx.fillText(diagModes[diagMode]+' | '+(xrHz||'?')+'Hz | DC '+drawCalls+(refreshNote.includes('FAIL')||refreshNote.includes('UNSUPPORTED')?' !':''),32,487);
+  ctx.fillText(diagModes[diagMode]+' | '+(xrHz||'?')+'Hz | '+timingNames[timingMode]+' | '+drawCalls+' DC'+(refreshNote.includes('FAIL')||refreshNote.includes('UNSUPPORTED')?' !':''),32,487);
   statsTexture.needsUpdate=true;
 }
 
@@ -522,13 +522,17 @@ let resetWasDown = false;
 const diagModes=['NORMAL','NO TEXTURES','NO FAR','WIREFRAME','MINIMAL'];
 let diagMode=0,modeWasDown=false,hzWasDown=false,refreshBusy=false,refreshNote='';
 let xrHz=0, drawCalls=0, drawTriangles=0;
+let timingMode=1,timingWasDown=false,clockError=0;
+const timingNames=['RAW','SYNC'];
+const testHorizon=new THREE.GridHelper(1800,18,0xffffff,0x819eb0);
+testHorizon.visible=false;scene.add(testHorizon);
 const diagFlat=new THREE.MeshBasicMaterial({color:0x839775});
 const diagWire=new THREE.MeshBasicMaterial({color:0x526e60,wireframe:true});
 function syncRefresh(){
   const hz=renderer.xr.getSession()?.frameRate;
   xrHz=Number.isFinite(hz)?hz:0;
   physicsDt=1/(xrHz>=60&&xrHz<=144?xrHz*2:180);
-  lastTime=null;accumulator=0;previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
+  lastTime=null;clockError=0;accumulator=0;previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
 }
 async function toggleRefresh(){
   const session=renderer.xr.getSession();
@@ -549,13 +553,17 @@ function drawDiagnosticFrame(){
     for(const t of geoTiles.values())apply(t.mesh,false);
     for(const t of farTiles.values())apply(t.mesh,true);
     for(const m of chunks.values())apply(m,false);
-    if(diagMode===4){saved.push([runway,runway.visible,runway.material]);runway.visible=false;}
+    if(diagMode===4){saved.push([runway,runway.visible,runway.material]);runway.visible=false;
+      for(const m of [importedCockpit,cockpit]){saved.push([m,m.visible,undefined]);m.visible=false;}
+    }
   }
+  testHorizon.visible=diagMode===4;
+  if(testHorizon.visible)testHorizon.position.set(Math.round(plane.position.x/100)*100,plane.position.y-120,Math.round(plane.position.z/100)*100);
   try{renderer.render(scene,camera);drawCalls=renderer.info.render.calls;drawTriangles=renderer.info.render.triangles;}
-  finally{for(const [m,v,mat] of saved){m.visible=v;m.material=mat;}}
+  finally{for(const [m,v,mat] of saved){m.visible=v;if(mat!==undefined)m.material=mat;}}
 }
 function getControls() {
-  let steerX = 0, steerY = 0, throttle = 0, rudderInput=0, controllers = 0, resetDown = false, modeDown=false,hzDown=false;
+  let steerX = 0, steerY = 0, throttle = 0, rudderInput=0, controllers = 0, resetDown = false, modeDown=false,hzDown=false,timingDown=false;
   const session = renderer.xr.getSession();
   if (session) {
     for (const src of session.inputSources) {
@@ -566,6 +574,7 @@ function getControls() {
       if (hand === 'right') { steerX = x; steerY = y; controllers++; }
       if (hand === 'left') { throttle = -y; rudderInput=x; controllers++; }
       if(src.gamepad.buttons[4]?.pressed)resetDown=true;
+      if(hand==='right'&&src.gamepad.buttons[3]?.pressed)timingDown=true;
       if(src.gamepad.buttons[5]?.pressed){if(hand==='right')modeDown=true;else if(hand==='left')hzDown=true;}
     }
   }
@@ -579,6 +588,9 @@ function getControls() {
   if(modeDown&&!modeWasDown)diagMode=(diagMode+1)%diagModes.length;
   if(hzDown&&!hzWasDown)toggleRefresh();
   modeWasDown=modeDown;hzWasDown=hzDown;
+  timingDown=timingDown||keys.has('KeyT');
+  if(timingDown&&!timingWasDown){timingMode=1-timingMode;clockError=0;}
+  timingWasDown=timingDown;
   if (resetDown && !resetWasDown) reset();
   resetWasDown = resetDown;
   if(keys.has('KeyQ'))rudderInput=-1;
@@ -666,7 +678,18 @@ let lastTime=null,hudTimer=0;
 let physicsDt=1/180; // Two fixed physics substeps per nominal 90 Hz XR frame.
 renderer.setAnimationLoop((time)=>{
   const rawDt=lastTime===null?0:Math.max(0,(time-lastTime)/1000);
-  const dt=Math.min(rawDt,0.10);
+  let dt=Math.min(rawDt,0.10);
+  // XR callback timestamps already share the presentation clock, but small timing
+  // variations can become visible as nonuniform artificial rotation. Quantize to
+  // refresh periods, with slow phase correction to avoid accumulated drift.
+  if(timingMode===1&&renderer.xr.isPresenting&&rawDt>0){
+    const period=1/(xrHz||90);
+    const periods=Math.max(1,Math.round(rawDt/period));
+    const nominal=Math.min(0.10,periods*period);
+    clockError=THREE.MathUtils.clamp(clockError+dt-nominal,-period,period);
+    const correction=THREE.MathUtils.clamp(clockError*0.025,-period*0.02,period*0.02);
+    dt=nominal+correction;clockError-=correction;
+  }
   lastTime=time;
   if(rawDt>0){
     frameMs=frameMs?frameMs*0.9+rawDt*100:rawDt*1000;
@@ -691,8 +714,10 @@ renderer.setAnimationLoop((time)=>{
   plane.quaternion.slerpQuaternions(previousAttitude,currentAttitude,blend);
   const startTerrain=performance.now();
   streamTimer+=dt;
-  if(!geoEnabled||streamTimer>=0.12){streamTimer=0;updateTerrain(plane.position.x,plane.position.z);}
-  if(geoEnabled)processTerrainWork();
+  if(diagMode!==4||geoSpawnPending){
+    if(!geoEnabled||streamTimer>=0.12){streamTimer=0;updateTerrain(plane.position.x,plane.position.z);}
+    if(geoEnabled)processTerrainWork();
+  }
   const terrainCost=performance.now()-startTerrain;
   terrainMs=terrainMs*0.9+terrainCost*0.1;terrainPeak=Math.max(terrainPeak,terrainCost);
   hudTimer += dt;
@@ -701,7 +726,7 @@ renderer.setAnimationLoop((time)=>{
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.3: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.4: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   drawDiagnosticFrame();
 });
