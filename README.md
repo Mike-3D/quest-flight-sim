@@ -80,3 +80,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.10.3: B/M cycles NORMAL, NO TEXTURES, NO FAR, WIREFRAME, MINIMAL (terrain hidden; cockpit and physics retained); Y/H requests 72/90 Hz when supported by the XR session, A/X reset. Actual reported XR Hz and draw calls in cockpit, triangles in desktop HUD. Diagnostic overrides restored after each render; terrain streaming remains active.
 
 - v0.10.4: experimental refresh-quantized simulation clock with bounded phase correction (SYNC default, right stick click/T toggles RAW); MINIMAL hides aircraft models and terrain, pauses new streaming/rebuild work and shows a lightweight grid for motion reference. In-flight network requests may still finish. No normal-mode graphics reductions.
+
+- v0.10.5: stationary world-space diagnostic grid (6 km, 50 m spacing); AUTO TURN mode after MINIMAL freezes physics and renders a constant 20 deg/s yaw directly from XR callback time, independent of controls and interpolation. Leaving test restores authoritative aircraft state. No normal-mode quality or aerodynamics changes.

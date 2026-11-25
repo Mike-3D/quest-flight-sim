@@ -490,7 +490,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.4',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.5',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -519,12 +519,14 @@ function axisValue(gamepad, preferred, fallback) {
   return Math.abs(raw) < 0.16 ? 0 : Math.sign(raw) * (Math.abs(raw) - 0.16) / 0.84;
 }
 let resetWasDown = false;
-const diagModes=['NORMAL','NO TEXTURES','NO FAR','WIREFRAME','MINIMAL'];
+const diagModes=['NORMAL','NO TEXTURES','NO FAR','WIREFRAME','MINIMAL','AUTO TURN'];
+const testOrigin=new THREE.Vector3(),testAttitude=new THREE.Quaternion(),testYaw=new THREE.Quaternion(),testUp=new THREE.Vector3(0,1,0);
+let testStart=null;
 let diagMode=0,modeWasDown=false,hzWasDown=false,refreshBusy=false,refreshNote='';
 let xrHz=0, drawCalls=0, drawTriangles=0;
 let timingMode=1,timingWasDown=false,clockError=0;
 const timingNames=['RAW','SYNC'];
-const testHorizon=new THREE.GridHelper(1800,18,0xffffff,0x819eb0);
+const testHorizon=new THREE.GridHelper(6000,120,0xffffff,0x819eb0);
 testHorizon.visible=false;scene.add(testHorizon);
 const diagFlat=new THREE.MeshBasicMaterial({color:0x839775});
 const diagWire=new THREE.MeshBasicMaterial({color:0x526e60,wireframe:true});
@@ -532,7 +534,7 @@ function syncRefresh(){
   const hz=renderer.xr.getSession()?.frameRate;
   xrHz=Number.isFinite(hz)?hz:0;
   physicsDt=1/(xrHz>=60&&xrHz<=144?xrHz*2:180);
-  lastTime=null;clockError=0;accumulator=0;previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
+  lastTime=null;clockError=0;testStart=null;accumulator=0;previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
 }
 async function toggleRefresh(){
   const session=renderer.xr.getSession();
@@ -546,19 +548,18 @@ async function toggleRefresh(){
 function drawDiagnosticFrame(){
   const saved=[];
   function apply(mesh,far){
-    if(diagMode===4||(diagMode===2&&far)){saved.push([mesh,mesh.visible,mesh.material]);mesh.visible=false;}
+    if(diagMode>=4||(diagMode===2&&far)){saved.push([mesh,mesh.visible,mesh.material]);mesh.visible=false;}
     else if(diagMode===1||diagMode===3){saved.push([mesh,mesh.visible,mesh.material]);mesh.material=diagMode===1?diagFlat:diagWire;}
   }
   if(diagMode!==0){
     for(const t of geoTiles.values())apply(t.mesh,false);
     for(const t of farTiles.values())apply(t.mesh,true);
     for(const m of chunks.values())apply(m,false);
-    if(diagMode===4){saved.push([runway,runway.visible,runway.material]);runway.visible=false;
+    if(diagMode>=4){saved.push([runway,runway.visible,runway.material]);runway.visible=false;
       for(const m of [importedCockpit,cockpit]){saved.push([m,m.visible,undefined]);m.visible=false;}
     }
   }
-  testHorizon.visible=diagMode===4;
-  if(testHorizon.visible)testHorizon.position.set(Math.round(plane.position.x/100)*100,plane.position.y-120,Math.round(plane.position.z/100)*100);
+  testHorizon.visible=diagMode>=4;
   try{renderer.render(scene,camera);drawCalls=renderer.info.render.calls;drawTriangles=renderer.info.render.triangles;}
   finally{for(const [m,v,mat] of saved){m.visible=v;if(mat!==undefined)m.material=mat;}}
 }
@@ -585,7 +586,11 @@ function getControls() {
   if (keys.has('ShiftLeft') && keys.has('KeyW')) throttle = 1;
   if (keys.has('ShiftLeft') && keys.has('KeyS')) throttle = -1;
   modeDown=modeDown||keys.has('KeyM');hzDown=hzDown||keys.has('KeyH');
-  if(modeDown&&!modeWasDown)diagMode=(diagMode+1)%diagModes.length;
+  if(modeDown&&!modeWasDown){
+    diagMode=(diagMode+1)%diagModes.length;
+    if(diagMode>=4){testOrigin.copy(currentPosition);testAttitude.copy(currentAttitude);testHorizon.position.copy(testOrigin);testHorizon.position.y-=120;testStart=null;}
+    accumulator=0;previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
+  }
   if(hzDown&&!hzWasDown)toggleRefresh();
   modeWasDown=modeDown;hzWasDown=hzDown;
   timingDown=timingDown||keys.has('KeyT');
@@ -699,7 +704,7 @@ renderer.setAnimationLoop((time)=>{
   // Restore the authoritative physics state before sampling inputs or stepping.
   plane.position.copy(currentPosition);plane.quaternion.copy(currentAttitude);
   const controls=getControls();
-  if(!geoSpawnPending)accumulator+=dt;
+  if(!geoSpawnPending&&diagMode!==5)accumulator+=dt;
   const startPhysics=performance.now();
   while(accumulator+1e-9>=physicsDt){
     previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
@@ -712,9 +717,16 @@ renderer.setAnimationLoop((time)=>{
   const blend=THREE.MathUtils.clamp(accumulator/physicsDt,0,1);
   plane.position.lerpVectors(previousPosition,currentPosition,blend);
   plane.quaternion.slerpQuaternions(previousAttitude,currentAttitude,blend);
+  // Independent visual-only constant turn: no simulation, input or interpolation.
+  if(diagMode===5){
+    if(testStart===null)testStart=time;
+    plane.position.copy(testOrigin);
+    testYaw.setFromAxisAngle(testUp,(time-testStart)*0.001*Math.PI/9);
+    plane.quaternion.copy(testAttitude).premultiply(testYaw);
+  }
   const startTerrain=performance.now();
   streamTimer+=dt;
-  if(diagMode!==4||geoSpawnPending){
+  if(diagMode<4||geoSpawnPending){
     if(!geoEnabled||streamTimer>=0.12){streamTimer=0;updateTerrain(plane.position.x,plane.position.z);}
     if(geoEnabled)processTerrainWork();
   }
@@ -726,7 +738,7 @@ renderer.setAnimationLoop((time)=>{
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.4: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.5: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   drawDiagnosticFrame();
 });
