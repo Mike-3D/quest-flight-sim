@@ -39,6 +39,6 @@ document.getElementById('geoKeyBtn').onclick=()=>{form.hidden=!form.hidden;if(!f
 form.onsubmit=e=>{e.preventDefault();const k=input.value.trim();if(!k)return;try{localStorage.setItem('linzKey',k);location.reload();}catch{error.textContent='Браузер не разрешает сохранять ключ.';}};
 document.getElementById('geoOff').onclick=()=>{try{localStorage.removeItem('linzKey');location.reload();}catch{form.hidden=false;error.textContent='Не удалось изменить настройки браузера.';}};
 </script>
-  <script type="module" src="./main.js?v=0.9.1"></script>
+  <script type="module" src="./main.js?v=0.9.3"></script>
 </body>
 </html>
