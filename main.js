@@ -490,7 +490,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.5',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.6',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -507,7 +507,7 @@ function drawStats(){
   ctx.textAlign='left';ctx.font='25px monospace';ctx.fillStyle=lastStatus?'#ffba64':'#8ddbd1';
   ctx.fillText('FPS '+fps.toFixed(0)+' | MAX '+peakFrameMs.toFixed(1)+' ms',32,420);
   ctx.fillText('PHYS '+physicsMs.toFixed(2)+' | LAND '+terrainMs.toFixed(2)+' ms',32,453);
-  ctx.fillText(diagModes[diagMode]+' | '+(xrHz||'?')+'Hz | '+timingNames[timingMode]+' | '+drawCalls+' DC'+(refreshNote.includes('FAIL')||refreshNote.includes('UNSUPPORTED')?' !':''),32,487);
+  ctx.fillText(diagModes[diagMode]+' | '+(xrHz||'?')+'Hz | '+(diagMode===5?(timingMode?'STEP':'TIME'):timingNames[timingMode])+' | '+drawCalls+' DC'+(refreshNote.includes('FAIL')||refreshNote.includes('UNSUPPORTED')?' !':''),32,487);
   statsTexture.needsUpdate=true;
 }
 
@@ -521,12 +521,17 @@ function axisValue(gamepad, preferred, fallback) {
 let resetWasDown = false;
 const diagModes=['NORMAL','NO TEXTURES','NO FAR','WIREFRAME','MINIMAL','AUTO TURN'];
 const testOrigin=new THREE.Vector3(),testAttitude=new THREE.Quaternion(),testYaw=new THREE.Quaternion(),testUp=new THREE.Vector3(0,1,0);
-let testStart=null;
+let testStart=null,testAngle=0,testPreviousTime=null;
 let diagMode=0,modeWasDown=false,hzWasDown=false,refreshBusy=false,refreshNote='';
 let xrHz=0, drawCalls=0, drawTriangles=0;
 let timingMode=1,timingWasDown=false,clockError=0;
 const timingNames=['RAW','SYNC'];
 const testHorizon=new THREE.GridHelper(6000,120,0xffffff,0x819eb0);
+// Broad opaque markers distinguish edge aliasing from repeated-frame judder.
+const testMarkers=new THREE.Group();
+const markerMat=new THREE.MeshBasicMaterial({color:0x314b60});
+for(let i=0;i<16;i++){const a=i*Math.PI/8,m=new THREE.Mesh(new THREE.BoxGeometry(8,60,8),markerMat);m.position.set(Math.cos(a)*180,120,Math.sin(a)*180);testMarkers.add(m);}
+testHorizon.add(testMarkers);
 testHorizon.visible=false;scene.add(testHorizon);
 const diagFlat=new THREE.MeshBasicMaterial({color:0x839775});
 const diagWire=new THREE.MeshBasicMaterial({color:0x526e60,wireframe:true});
@@ -534,12 +539,15 @@ function syncRefresh(){
   const hz=renderer.xr.getSession()?.frameRate;
   xrHz=Number.isFinite(hz)?hz:0;
   physicsDt=1/(xrHz>=60&&xrHz<=144?xrHz*2:180);
-  lastTime=null;clockError=0;testStart=null;accumulator=0;previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
+  lastTime=null;clockError=0;testStart=null;testPreviousTime=null;accumulator=0;previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
 }
 async function toggleRefresh(){
   const session=renderer.xr.getSession();
   if(!session||refreshBusy)return;
-  const target=(session.frameRate||90)>80?72:90;
+  const rates=[72,90,120].filter(h=>Array.from(session.supportedFrameRates||[]).some(v=>Math.abs(v-h)<0.1));
+  if(!rates.length){refreshNote='HZ UNSUPPORTED';return;}
+  const index=rates.findIndex(h=>Math.abs(h-(session.frameRate||90))<0.1);
+  const target=rates[(index+1)%rates.length];
   if(typeof session.updateTargetFrameRate!=='function'||!Array.from(session.supportedFrameRates||[]).includes(target)){refreshNote='HZ UNSUPPORTED';return;}
   refreshBusy=true;
   try{await session.updateTargetFrameRate(target);if(renderer.xr.getSession()===session){syncRefresh();refreshNote='HZ '+target+' REQUESTED';}}
@@ -588,7 +596,7 @@ function getControls() {
   modeDown=modeDown||keys.has('KeyM');hzDown=hzDown||keys.has('KeyH');
   if(modeDown&&!modeWasDown){
     diagMode=(diagMode+1)%diagModes.length;
-    if(diagMode>=4){testOrigin.copy(currentPosition);testAttitude.copy(currentAttitude);testHorizon.position.copy(testOrigin);testHorizon.position.y-=120;testStart=null;}
+    if(diagMode>=4){testOrigin.copy(currentPosition);testAttitude.copy(currentAttitude);testHorizon.position.copy(testOrigin);testHorizon.position.y-=120;testStart=null;testAngle=0;testPreviousTime=null;}
     accumulator=0;previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
   }
   if(hzDown&&!hzWasDown)toggleRefresh();
@@ -721,7 +729,9 @@ renderer.setAnimationLoop((time)=>{
   if(diagMode===5){
     if(testStart===null)testStart=time;
     plane.position.copy(testOrigin);
-    testYaw.setFromAxisAngle(testUp,(time-testStart)*0.001*Math.PI/9);
+    const step=testPreviousTime===null?0:timingMode===1?1/(xrHz||90):Math.max(0,(time-testPreviousTime)*0.001);
+    testPreviousTime=time;testAngle=(testAngle+step*Math.PI/9)%(2*Math.PI);
+    testYaw.setFromAxisAngle(testUp,testAngle);
     plane.quaternion.copy(testAttitude).premultiply(testYaw);
   }
   const startTerrain=performance.now();
@@ -738,7 +748,7 @@ renderer.setAnimationLoop((time)=>{
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.5: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.6: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   drawDiagnosticFrame();
 });

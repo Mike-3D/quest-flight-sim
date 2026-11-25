@@ -82,3 +82,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.10.4: experimental refresh-quantized simulation clock with bounded phase correction (SYNC default, right stick click/T toggles RAW); MINIMAL hides aircraft models and terrain, pauses new streaming/rebuild work and shows a lightweight grid for motion reference. In-flight network requests may still finish. No normal-mode graphics reductions.
 
 - v0.10.5: stationary world-space diagnostic grid (6 km, 50 m spacing); AUTO TURN mode after MINIMAL freezes physics and renders a constant 20 deg/s yaw directly from XR callback time, independent of controls and interpolation. Leaving test restores authoritative aircraft state. No normal-mode quality or aerodynamics changes.
+
+- v0.10.6: refresh cycle 72/90/120 Hz when supported; AUTO TURN right stick toggles STEP (constant angle per delivered callback) vs TIME (elapsed callback timestamp), with broad markers for aliasing comparison. Normal flight unchanged.
