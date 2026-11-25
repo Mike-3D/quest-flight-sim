@@ -34,12 +34,12 @@ function noise(x,z) {
 let geoKey='';
 try{geoKey=localStorage.getItem('linzKey')||'';}catch{}
 const geoEnabled=!!geoKey;
-const geoZoom=14, geoN=2**geoZoom, geoLat=-43.38, geoLon=172.35;
+const geoZoom=14, geoN=2**geoZoom, geoLat=-43.32, geoLon=171.93;
 const geoX=(geoLon+180)/360*geoN;
 const geoY=(1-Math.asinh(Math.tan(geoLat*Math.PI/180))/Math.PI)/2*geoN;
 const geoSize=40075016.686*Math.cos(geoLat*Math.PI/180)/geoN;
 const geoTiles=new Map();
-let geoGround=0, geoActive=0, geoFailed=0;
+let geoGround=0, geoActive=0, geoFailed=0, detailActive=0, geoError='';
 function geoHeight(x,z){
   const tx=geoX+x/geoSize,ty=geoY+(z-180)/geoSize;
   const tile=geoTiles.get(Math.floor(tx)+','+Math.floor(ty));
@@ -140,6 +140,28 @@ async function tileImage(url,signal){
   const res=await fetch(url,{signal});if(!res.ok)throw Error('Tile HTTP '+res.status);
   return createImageBitmap(await res.blob(),{colorSpaceConversion:'none'});
 }
+function geoSummary(){
+  const tiles=[...geoTiles.values()], dem=tiles.filter(t=>t.dem), photo=tiles.filter(t=>t.photo), hd=tiles.filter(t=>t.detail==='ready');
+  let lo=Infinity,hi=-Infinity;
+  for(const t of dem){lo=Math.min(lo,t.min);hi=Math.max(hi,t.max);}
+  return 'DEM '+dem.length+'/'+tiles.length+' '+(dem.length?Math.round(lo)+'..'+Math.round(hi)+'m':'--')+' | IMG '+photo.length+' HD '+hd.length;
+}
+async function upgradePhoto(t){
+  detailActive++;t.detail='loading';
+  const cv=document.createElement('canvas');cv.width=cv.height=1024;
+  const ctx=cv.getContext('2d');
+  try{
+    // 16 z16 child photos stitched over the existing z14 geometry.
+    for(let dy=0;dy<4;dy++)for(let dx=0;dx<4;dx++){
+      const bmp=await tileImage('https://basemaps.linz.govt.nz/v1/tiles/aerial/3857/16/'+(t.x*4+dx)+'/'+(t.y*4+dy)+'.png?api='+encodeURIComponent(geoKey),t.abort.signal);
+      ctx.drawImage(bmp,dx*256,dy*256,256,256);bmp.close();
+    }
+    if(geoTiles.get(t.id)!==t)return;
+    const tex=new THREE.CanvasTexture(cv);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());
+    if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}
+    t.mesh.material=new THREE.MeshBasicMaterial({map:tex});t.detail='ready';
+  }catch(e){t.detail='failed';if(!t.abort.signal.aborted)geoError='HD: '+e.message;}finally{detailActive--;}
+}
 async function loadGeo(t){
   geoActive++;t.state='loading';
   const path=geoZoom+'/'+t.x+'/'+t.y+'.png';
@@ -155,6 +177,7 @@ async function loadGeo(t){
       const rgba=ctx.getImageData(0,0,cv.width,cv.height).data, values=new Float32Array(cv.width*cv.height);
       for(let i=0;i<values.length;i++)values[i]=rgba[i*4]*256+rgba[i*4+1]+rgba[i*4+2]/256-32768;
       t.dem={w:cv.width,h:cv.height,values};
+      t.min=Infinity;t.max=-Infinity;for(const h of values){t.min=Math.min(t.min,h);t.max=Math.max(t.max,h);}
       const p=t.mesh.geometry.attributes.position;
       for(let i=0;i<p.count;i++)p.setY(i,sampleDEM(t.dem,p.getX(i)/geoSize+0.5,p.getZ(i)/geoSize+0.5));
       p.needsUpdate=true;t.mesh.geometry.computeBoundingSphere();
@@ -163,9 +186,9 @@ async function loadGeo(t){
     if(results[1].status==='fulfilled'){
       const bmp=results[1].value, cv=document.createElement('canvas');cv.width=bmp.width;cv.height=bmp.height;cv.getContext('2d').drawImage(bmp,0,0);bmp.close();
       const tex=new THREE.CanvasTexture(cv);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=4;
-      t.mesh.material=new THREE.MeshBasicMaterial({map:tex});
+      t.mesh.material=new THREE.MeshBasicMaterial({map:tex});t.photo=true;
     }
-    t.state=results.every(r=>r.status==='fulfilled')?'ready':'partial';if(t.state==='partial')geoFailed++;
+    t.state=results.every(r=>r.status==='fulfilled')?'ready':'partial';if(t.state==='partial'){geoFailed++;geoError=results.map((r,i)=>r.status==='rejected'?(i===0?'DEM: ':'IMG: ')+r.reason.message:'').filter(Boolean).join(' / ');}
   }catch{t.state='partial';geoFailed++;}finally{geoActive--;}
 }
 function updateGeo(x,z){
@@ -182,6 +205,7 @@ function updateGeo(x,z){
   for(const [id,t] of geoTiles)if(!need.has(id)){t.abort.abort();scene.remove(t.mesh);t.mesh.geometry.dispose();if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}geoTiles.delete(id);}
   const queue=[...geoTiles.values()].filter(t=>t.state==='queued').sort((a,b)=>Math.hypot(a.x-cx,a.y-cy)-Math.hypot(b.x-cx,b.y-cy));
   while(geoActive<3&&queue.length)loadGeo(queue.shift());
+  if(detailActive<1){const near=[...geoTiles.values()].filter(t=>t.photo&&!t.detail&&Math.abs(t.x-cx)<=1&&Math.abs(t.y-cy)<=1).sort((a,b)=>Math.hypot(a.x-cx,a.y-cy)-Math.hypot(b.x-cx,b.y-cy));if(near.length)upgradePhoto(near[0]);}
 }
 if(geoEnabled)updateGeo(0,180);else updateTerrain(0,180);
 // Small grass airstrip in the flat starting valley.
@@ -317,7 +341,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.9.1',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.9.2',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -334,7 +358,7 @@ function drawStats(){
   ctx.textAlign='left';ctx.font='25px monospace';ctx.fillStyle=lastStatus?'#ffba64':'#8ddbd1';
   ctx.fillText('FPS '+fps.toFixed(0)+' | FRAME '+frameMs.toFixed(1)+' ms',32,420);
   ctx.fillText('PHYS '+physicsMs.toFixed(2)+' | MAX '+peakFrameMs.toFixed(1)+' ms',32,453);
-  ctx.fillText(lastStatus?'GROUND ASSIST':'6DOF / INTERPOLATED',32,487);
+  ctx.fillText(lastStatus?'GROUND ASSIST':geoEnabled?geoSummary():'6DOF / INTERPOLATED',32,487);
   statsTexture.needsUpdate=true;
 }
 drawStats();
@@ -484,7 +508,7 @@ renderer.setAnimationLoop((time)=>{
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [geoEnabled?'LINZ / DEM: '+[...geoTiles.values()].filter(t=>t.state==='ready').length+'/'+geoTiles.size+' · errors '+geoFailed:'Физика 6DOF v0.9.1: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = [geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.9.2: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
