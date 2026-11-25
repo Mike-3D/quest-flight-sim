@@ -187,8 +187,11 @@ addEventListener('blur', () => keys.clear());
 document.getElementById('reset').addEventListener('click', reset);
 
 // SI units, body axes: +X right, +Y up, -Z forward.
-let speed=32, power=0.55, lastStatus='', alpha=0, beta=0;
+let speed=38, power=0.34, lastStatus='', alpha=0, beta=0;
 const mass=550, gravity=9.81;
+// P92 Flight Manual (2008), sections 1.3, 1.4, 4.4, 5.1.2.6.
+const p92={wingArea:13.02, span:9.3, chord:1.4, tailArea:1.97, maxPower:73500, propDiameter:1.73, maxMass:600};
+let rudder=0, loadFactor=1;
 const velocity=new THREE.Vector3(), omega=new THREE.Vector3();
 const inertia=new THREE.Vector3(2000,2200,1450);
 const force=new THREE.Vector3(), torque=new THREE.Vector3();
@@ -198,10 +201,10 @@ const worldForce=new THREE.Vector3(), inverseAttitude=new THREE.Quaternion();
 const deltaQ=new THREE.Quaternion(), spinAxis=new THREE.Vector3();
 const angularMomentum=new THREE.Vector3(), gyro=new THREE.Vector3();
 const surfaces=[
-  {r:new THREE.Vector3(-2.5,0,0.12),area:6,kind:'left'},
-  {r:new THREE.Vector3( 2.5,0,0.12),area:6,kind:'right'},
-  {r:new THREE.Vector3(0,0.15,3.6),area:2.0,kind:'tail'},
-  {r:new THREE.Vector3(0,0.65,3.5),area:1.25,kind:'fin'}
+  {r:new THREE.Vector3(-2.325,0,0.12),area:p92.wingArea/2,kind:'left'},
+  {r:new THREE.Vector3( 2.325,0,0.12),area:p92.wingArea/2,kind:'right'},
+  {r:new THREE.Vector3(0,0.15,3.0),area:p92.tailArea,kind:'tail'},
+  {r:new THREE.Vector3(0,0.65,3.0),area:1.25,kind:'fin'}
 ];
 const previousPosition=new THREE.Vector3(), currentPosition=new THREE.Vector3();
 const previousAttitude=new THREE.Quaternion(), currentAttitude=new THREE.Quaternion();
@@ -209,9 +212,9 @@ let accumulator=0, frameMs=0, physicsMs=0, peakFrameMs=0;
 let frameCount=0, frameElapsed=0, fps=0, peakWindow=0;
 function reset(){
   plane.position.set(0,150,180);
-  plane.rotation.set(0.065,0,0,'YXZ');
-  velocity.set(0,0,-32);omega.set(0,0,0);
-  speed=32;power=0.55;alpha=0.065;beta=0;lastStatus='';
+  plane.rotation.set(0.046,0,0,'YXZ');
+  velocity.set(0,0,-38);omega.set(0,0,0);
+  speed=38;power=0.34;alpha=0.046;beta=0;rudder=0;loadFactor=1;lastStatus='';
   previousPosition.copy(plane.position);currentPosition.copy(plane.position);
   previousAttitude.copy(plane.quaternion);currentAttitude.copy(plane.quaternion);
   accumulator=0;
@@ -244,14 +247,14 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.7.3',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.8',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
     ['V/S',(velocity.y>=0?'+':'')+velocity.y.toFixed(1)+' m/s'],
     ['POWER',(power*100).toFixed(0)+' %'],
     ['AoA',(alpha*180/Math.PI).toFixed(1)+' deg'],
-    ['SLIP',(beta*180/Math.PI).toFixed(1)+' deg']
+    ['SLIP',(beta*180/Math.PI).toFixed(1)+' deg / '+loadFactor.toFixed(2)+' G']
   ];
   ctx.font='35px monospace';
   rows.forEach(([label,value],i)=>{
@@ -275,7 +278,7 @@ function axisValue(gamepad, preferred, fallback) {
 }
 let resetWasDown = false;
 function getControls() {
-  let steerX = 0, steerY = 0, throttle = 0, controllers = 0, resetDown = false;
+  let steerX = 0, steerY = 0, throttle = 0, rudderInput=0, controllers = 0, resetDown = false;
   const session = renderer.xr.getSession();
   if (session) {
     for (const src of session.inputSources) {
@@ -284,7 +287,7 @@ function getControls() {
       const x = axisValue(src.gamepad, 2, 0);
       const y = axisValue(src.gamepad, 3, 1);
       if (hand === 'right') { steerX = x; steerY = y; controllers++; }
-      if (hand === 'left') { throttle = -y; controllers++; }
+      if (hand === 'left') { throttle = -y; rudderInput=x; controllers++; }
       if (src.gamepad.buttons[4]?.pressed || src.gamepad.buttons[5]?.pressed) resetDown = true;
     }
   }
@@ -296,7 +299,9 @@ function getControls() {
   if (keys.has('ShiftLeft') && keys.has('KeyS')) throttle = -1;
   if (resetDown && !resetWasDown) reset();
   resetWasDown = resetDown;
-  return { steerX, steerY, throttle, controllers };
+  if(keys.has('KeyQ'))rudderInput=-1;
+  if(keys.has('KeyE'))rudderInput=1;
+  return { steerX, steerY, throttle, rudderInput, controllers };
 }
 // Each aerodynamic surface sees its own local airspeed, including rotation.
 function physicsStep(dt,controls){
@@ -306,7 +311,19 @@ function physicsStep(dt,controls){
   alpha=Math.atan2(-flow.y,-flow.z);
   beta=Math.atan2(flow.x,Math.hypot(flow.y,flow.z));
   // Propeller thrust always follows the aircraft longitudinal axis.
-  const thrust=power*1500*THREE.MathUtils.clamp(1.25-Math.max(0,-flow.z)/150,0.35,1.25);
+  const rho=1.225*Math.exp(-Math.max(0,plane.position.y+12)/10000);
+  const shaftPower=power*p92.maxPower*rho/1.225;
+  const diskArea=Math.PI*(p92.propDiameter/2)**2;
+  // Approximate propeller momentum theory, finite static thrust, power-limited in flight.
+  const axial=Math.max(0,-flow.z), usefulPower=shaftPower*0.72;
+  let induced=0;
+  if(usefulPower>0){
+    let lo=0,hi=Math.cbrt(usefulPower/(2*rho*diskArea));
+    for(let i=0;i<12;i++){const m=(lo+hi)/2;if(2*rho*diskArea*m*(axial+m)**2>usefulPower)hi=m;else lo=m;}
+    induced=(lo+hi)/2;
+  }
+  const thrust=2*rho*diskArea*induced*(axial+induced);
+  rudder=THREE.MathUtils.damp(rudder,controls.rudderInput,5,dt);
   force.set(0,0,-thrust);torque.set(0,0,0);
   for(const s of surfaces){
     surfaceVelocity.crossVectors(omega,s.r).add(flow);
@@ -315,25 +332,25 @@ function physicsStep(dt,controls){
     const v2=u*u+v*v;
     if(v2<0.01)continue;
     const a=Math.atan2(v,u);
-    let incidence=0, slope=4.5, maxCl=1.45;
-    if(tail){incidence=-0.035-controls.steerY*0.22;slope=3.5;maxCl=1.1;}
-    else if(fin){slope=3.0;maxCl=1.1;}
-    else incidence=0.07+(s.kind==='left'?1:-1)*controls.steerX*0.09;
+    let incidence=0, slope=5.0, maxCl=1.60;
+    if(tail){incidence=-0.080-controls.steerY*0.18;slope=3.5;maxCl=1.1;}
+    else if(fin){slope=3.0;maxCl=1.1;incidence=-rudder*0.18;}
+    else incidence=0.060+(s.kind==='left'?1:-1)*controls.steerX*0.09;
     const effective=a+incidence;
-    const separated=THREE.MathUtils.smoothstep(Math.abs(effective),0.24,0.55);
+    const separated=THREE.MathUtils.smoothstep(Math.abs(effective),tail||fin?0.25:0.32,0.58);
     const cl=THREE.MathUtils.clamp(slope*effective,-maxCl,maxCl)*(1-0.75*separated);
-    const cd=0.018+0.075*cl*cl+0.7*separated;
-    const q=0.5*1.225*v2*s.area, inv=1/Math.sqrt(v2);
+    const cd=0.012+0.055*cl*cl+0.7*separated;
+    const q=0.5*rho*v2*s.area, inv=1/Math.sqrt(v2);
     // Lift perpendicular to the local flow; drag opposite it.
-    if(fin)surfaceForce.set((-cl*u-cd*v)*q*inv,0,(-cl*v+cd*u)*q*inv);
+    if(fin)surfaceForce.set((-cl*u-cd*v)*q*inv,0,(cl*v+cd*u)*q*inv);
     else surfaceForce.set(0,(cl*u+cd*v)*q*inv,(-cl*v+cd*u)*q*inv);
     force.add(surfaceForce);
     torque.add(moment.crossVectors(s.r,surfaceForce));
   }
   // Fuselage drag and lateral resistance. No artificial heading lock.
-  force.x-=0.5*1.225*2.1*flow.x*Math.abs(flow.x);
-  force.y-=0.5*1.225*0.8*flow.y*Math.abs(flow.y);
-  force.z-=0.5*1.225*0.45*flow.z*Math.abs(flow.z);
+  force.x-=0.5*rho*2.1*flow.x*Math.abs(flow.x);
+  force.y-=0.5*rho*0.8*flow.y*Math.abs(flow.y);
+  force.z-=0.5*rho*0.24*flow.z*Math.abs(flow.z);
   // Modest additional damping for unresolved airframe geometry.
   const damping=Math.min(2.5,flow.length()/32);
   torque.x-=250*damping*omega.x;
@@ -349,6 +366,7 @@ function physicsStep(dt,controls){
     deltaQ.setFromAxisAngle(spinAxis,rate*dt);
     plane.quaternion.multiply(deltaQ).normalize();
   }
+  loadFactor=force.y/(mass*gravity);
   worldForce.copy(force).applyQuaternion(plane.quaternion);
   worldForce.y-=mass*gravity;
   velocity.addScaledVector(worldForce,dt/mass);
@@ -396,7 +414,7 @@ renderer.setAnimationLoop((time)=>{
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = ['Физика 6DOF v0.7.3: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = ['Физика 6DOF v0.8: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
