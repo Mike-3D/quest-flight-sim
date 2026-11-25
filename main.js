@@ -34,11 +34,12 @@ function noise(x,z) {
 let geoKey='';
 try{geoKey=localStorage.getItem('linzKey')||'';}catch{}
 const geoEnabled=!!geoKey;
-const geoZoom=14, geoN=2**geoZoom, geoLat=-43.32, geoLon=171.93;
+const geoZoom=14, geoN=2**geoZoom, geoLat=-43.045, geoLon=171.632;
 const geoX=(geoLon+180)/360*geoN;
 const geoY=(1-Math.asinh(Math.tan(geoLat*Math.PI/180))/Math.PI)/2*geoN;
 const geoSize=40075016.686*Math.cos(geoLat*Math.PI/180)/geoN;
 const geoTiles=new Map();
+let geoSpawnPending=geoEnabled;
 let geoGround=0, geoActive=0, geoFailed=0, detailActive=0, geoError='';
 function geoHeight(x,z){
   const tx=geoX+x/geoSize,ty=geoY+(z-180)/geoSize;
@@ -181,15 +182,19 @@ async function loadGeo(t){
       const p=t.mesh.geometry.attributes.position;
       for(let i=0;i<p.count;i++)p.setY(i,sampleDEM(t.dem,p.getX(i)/geoSize+0.5,p.getZ(i)/geoSize+0.5));
       p.needsUpdate=true;t.mesh.geometry.computeBoundingSphere();
-      if(t.x===Math.floor(geoX)&&t.y===Math.floor(geoY))geoGround=geoHeight(0,180);
+      if(t.x===Math.floor(geoX)&&t.y===Math.floor(geoY)){
+        geoGround=geoHeight(0,180);
+        if(geoSpawnPending){geoSpawnPending=false;reset();}
+      }
     }
     if(results[1].status==='fulfilled'){
       const bmp=results[1].value, cv=document.createElement('canvas');cv.width=bmp.width;cv.height=bmp.height;cv.getContext('2d').drawImage(bmp,0,0);bmp.close();
       const tex=new THREE.CanvasTexture(cv);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=4;
       t.mesh.material=new THREE.MeshBasicMaterial({map:tex});t.photo=true;
     }
+    if(t.x===Math.floor(geoX)&&t.y===Math.floor(geoY)&&geoSpawnPending){geoSpawnPending=false;reset();}
     t.state=results.every(r=>r.status==='fulfilled')?'ready':'partial';if(t.state==='partial'){geoFailed++;geoError=results.map((r,i)=>r.status==='rejected'?(i===0?'DEM: ':'IMG: ')+r.reason.message:'').filter(Boolean).join(' / ');}
-  }catch{t.state='partial';geoFailed++;}finally{geoActive--;}
+  }catch{t.state='partial';geoFailed++;if(t.x===Math.floor(geoX)&&t.y===Math.floor(geoY)&&geoSpawnPending){geoSpawnPending=false;reset();}}finally{geoActive--;}
 }
 function updateGeo(x,z){
   const cx=Math.floor(geoX+x/geoSize),cy=Math.floor(geoY+(z-180)/geoSize),need=new Set();
@@ -305,9 +310,10 @@ const previousAttitude=new THREE.Quaternion(), currentAttitude=new THREE.Quatern
 let accumulator=0, frameMs=0, physicsMs=0, peakFrameMs=0;
 let frameCount=0, frameElapsed=0, fps=0, peakWindow=0;
 function reset(){
-  plane.position.set(0,geoEnabled?geoHeight(0,180)+150:150,180);
-  plane.rotation.set(0.046,0,0,'YXZ');
-  velocity.set(0,0,-38);omega.set(0,0,0);
+  plane.position.set(0,geoEnabled?geoHeight(0,180)+450:150,180);
+  const startYaw=geoEnabled?0.85:0;
+  plane.rotation.set(0.046,startYaw,0,'YXZ');
+  velocity.set(-38*Math.sin(startYaw),0,-38*Math.cos(startYaw));omega.set(0,0,0);
   speed=38;power=0.34;alpha=0.046;beta=0;rudder=0;loadFactor=1;lastStatus='';
   previousPosition.copy(plane.position);currentPosition.copy(plane.position);
   previousAttitude.copy(plane.quaternion);currentAttitude.copy(plane.quaternion);
@@ -341,7 +347,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.9.2',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.9.3',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -488,7 +494,7 @@ renderer.setAnimationLoop((time)=>{
   // Restore the authoritative physics state before sampling inputs or stepping.
   plane.position.copy(currentPosition);plane.quaternion.copy(currentAttitude);
   const controls=getControls();
-  accumulator+=dt;
+  if(!geoSpawnPending)accumulator+=dt;
   const startPhysics=performance.now();
   while(accumulator>=physicsDt){
     previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
@@ -508,7 +514,7 @@ renderer.setAnimationLoop((time)=>{
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.9.2: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = [geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.9.3: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
