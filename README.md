@@ -70,3 +70,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.9.3: mountain spawn near Bealey in the Waimakariri valley (-43.045,171.632), northwest heading, 450 m AGL after initial DEM arrives. Physics waits for the initial tile attempt; procedural mode unchanged.
 
 - v0.9.4: shared DEM boundary vertices (including four-way corners), neighboring meshes refreshed on load/unload, online terrain radius expanded to 3 tiles (49 total), online fog density 0.00048 and far plane 5400 m. Procedural mode and flight physics unchanged.
+
+- v0.10: experimental nested z12 far terrain with masked z14 coverage and matched near/far edges; z14 near meshes retained; z16 surrounding imagery and z17 center imagery; 20 km far plane and reduced fog. Far loads limited to two concurrent pairs, imagery detail one job. No z18/19 imagery yet.
