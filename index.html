@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#83c6f4">
-  <title>Quest Flight Sim · v0.8.1</title>
+  <title>Quest Flight Sim · v0.9</title>
   <style>
     * { box-sizing: border-box; }
     body { margin:0; overflow:hidden; background:#86c8f3; font-family:system-ui,-apple-system,sans-serif; color:#fff; }
@@ -20,15 +20,16 @@
 </head>
 <body>
   <div id="hud">
-    <h1>✈ Quest Flight Sim <small>v0.8.1</small></h1>
+    <h1>✈ Quest Flight Sim <small>v0.9</small></h1>
     <p id="flight">Скорость: 0 · Высота: 0</p>
     <p id="input">Стики: ожидание контроллеров</p>
     <p>Quest 3: правый стик — поворот и тангаж, левый стик вверх/вниз — газ, влево/вправо — руль направления. Кнопка A/X — сброс.</p>
     <p>ПК: WASD / стрелки — управление, W/S с Shift — газ, Q/E — руль направления, R — сброс.</p>
-    <p id="message"></p>
+    <p id="message"></p><p><button id="geoKeyBtn" type="button">LINZ / реальный ландшафт</button> <button id="geoOff" type="button">Процедурный</button></p><p style="font-size:10px">Imagery: Toitū Te Whenua LINZ and contributors · Elevation: Mapzen / AWS Terrain Tiles · <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md">DEM credits</a></p>
   </div>
   <button id="reset" type="button">↺ Сброс</button>
   <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.181.2/build/three.module.js"}}</script>
-  <script type="module" src="./main.js?v=0.8"></script>
+  <script>document.getElementById('geoKeyBtn').onclick=()=>{const k=prompt('LINZ API key (stored only in this browser)',localStorage.getItem('linzKey')||'');if(k&&k.trim()){localStorage.setItem('linzKey',k.trim());location.reload();}};document.getElementById('geoOff').onclick=()=>{localStorage.removeItem('linzKey');location.reload();};</script>
+  <script type="module" src="./main.js?v=0.9"></script>
 </body>
 </html>
