@@ -41,6 +41,20 @@ const geoY=(1-Math.asinh(Math.tan(geoLat*Math.PI/180))/Math.PI)/2*geoN;
 const geoSize=40075016.686*Math.cos(geoLat*Math.PI/180)/geoN;
 const geoTiles=new Map(), farTiles=new Map();
 let farActive=0, farCenter='', nearCenter='', nearBounds=null;
+const nearDirty=new Set(),farDirty=new Set();
+let terrainMs=0, terrainPeak=0, streamTimer=0;
+function queueFar(t){if(t)farDirty.add(t);}
+function queueNear(t){if(t)nearDirty.add(t);}
+function processTerrainWork(){
+  const start=performance.now();
+  // Rebuild at most two meshes per frame. Keep old geometry until replacement.
+  for(let i=0;i<2;i++){
+    if(performance.now()-start>1.5)break;
+    if(farDirty.size){const t=farDirty.values().next().value;farDirty.delete(t);if(farTiles.get(t.id)===t)rebuildFar(t);}
+    else if(nearDirty.size){const t=nearDirty.values().next().value;nearDirty.delete(t);if(geoTiles.get(t.id)===t)rebuildGeoMesh(t);}
+    else break;
+  }
+}
 let geoSpawnPending=geoEnabled;
 let geoGround=0, geoActive=0, geoFailed=0, detailActive=0, geoError='';
 function geoHeight(x,z){
@@ -164,7 +178,7 @@ function rebuildGeoMesh(t){
 }
 function refreshGeoNeighbors(x,y){
   for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){
-    const t=geoTiles.get((x+dx)+','+(y+dy));if(t)rebuildGeoMesh(t);
+    const t=geoTiles.get((x+dx)+','+(y+dy));if(t)queueNear(t);
   }
 }
 // z12 background tiles: four times wider than the z14 near tiles.
@@ -213,7 +227,7 @@ function rebuildFar(t){
 function refreshNearBorder(){
   if(!nearBounds)return;
   const b=nearBounds;
-  for(const t of geoTiles.values())if(t.x===b.x0||t.x===b.x1-1||t.y===b.y0||t.y===b.y1-1)rebuildGeoMesh(t);
+  for(const t of geoTiles.values())if(t.x===b.x0||t.x===b.x1-1||t.y===b.y0||t.y===b.y1-1)queueNear(t);
 }
 async function loadFar(t){
   farActive++;t.state='loading';
@@ -230,7 +244,7 @@ async function loadFar(t){
       const rgba=ctx.getImageData(0,0,cv.width,cv.height).data,values=new Float32Array(cv.width*cv.height);
       for(let i=0;i<values.length;i++)values[i]=rgba[i*4]*256+rgba[i*4+1]+rgba[i*4+2]/256-32768;
       t.dem={w:cv.width,h:cv.height,values};
-      for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){const k=farTiles.get((t.x+dx)+','+(t.y+dy));if(k)rebuildFar(k);}
+      for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){const k=farTiles.get((t.x+dx)+','+(t.y+dy));if(k)queueFar(k);}
       refreshNearBorder();
     }
     if(r[1].status==='fulfilled'){
@@ -250,11 +264,11 @@ function updateFar(cx,cy){
       if(!farTiles.has(id)){
         const g=new THREE.PlaneGeometry(geoSize*4,geoSize*4,farSegments,farSegments);g.rotateX(-Math.PI/2);
         const mesh=new THREE.Mesh(g,geoMat);mesh.position.set((x*4+2-geoX)*geoSize,0,(y*4+2-geoY)*geoSize+180);scene.add(mesh);
-        const t={id,x,y,mesh,state:'queued',abort:new AbortController()};farTiles.set(id,t);
+        const t={id,x,y,mesh,state:'queued',abort:new AbortController()};farTiles.set(id,t);rebuildFar(t);
       }
     }
     for(const [id,t] of farTiles)if(!need.has(id)){t.abort.abort();scene.remove(t.mesh);t.mesh.geometry.dispose();if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}farTiles.delete(id);}
-    for(const t of farTiles.values())rebuildFar(t);
+    for(const t of farTiles.values())queueFar(t);
   }
   if(farActive<2){const q=[...farTiles.values()].filter(t=>t.state==='queued').sort((a,b)=>Math.hypot(a.x-fx,a.y-fy)-Math.hypot(b.x-fx,b.y-fy));while(farActive<2&&q.length)loadFar(q.shift());}
 }
@@ -301,7 +315,7 @@ async function loadGeo(t){
       for(let i=0;i<values.length;i++)values[i]=rgba[i*4]*256+rgba[i*4+1]+rgba[i*4+2]/256-32768;
       t.dem={w:cv.width,h:cv.height,values};
       t.min=Infinity;t.max=-Infinity;for(const h of values){t.min=Math.min(t.min,h);t.max=Math.max(t.max,h);}
-      refreshGeoNeighbors(t.x,t.y);
+      rebuildGeoMesh(t);refreshGeoNeighbors(t.x,t.y);
       if(t.x===Math.floor(geoX)&&t.y===Math.floor(geoY)){
         geoGround=geoHeight(0,180);
         if(geoSpawnPending){geoSpawnPending=false;reset();}
@@ -331,7 +345,7 @@ function updateGeo(x,z){
     }
   }
   for(const [id,t] of geoTiles)if(!need.has(id)){t.abort.abort();scene.remove(t.mesh);t.mesh.geometry.dispose();if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}geoTiles.delete(id);changed.push([t.x,t.y]);}
-  if(moved){for(const t of farTiles.values())rebuildFar(t);refreshNearBorder();}
+  if(moved){for(const t of farTiles.values())queueFar(t);refreshNearBorder();}
   for(const [tx,ty] of changed)refreshGeoNeighbors(tx,ty);
   if(!geoSpawnPending)updateFar(cx,cy);
   const queue=[...geoTiles.values()].filter(t=>t.state==='queued').sort((a,b)=>Math.hypot(a.x-cx,a.y-cy)-Math.hypot(b.x-cx,b.y-cy));
@@ -473,7 +487,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.1',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -488,8 +502,8 @@ function drawStats(){
     ctx.fillStyle='#e2f8ed';ctx.textAlign='right';ctx.fillText(value,736,y);
   });
   ctx.textAlign='left';ctx.font='25px monospace';ctx.fillStyle=lastStatus?'#ffba64':'#8ddbd1';
-  ctx.fillText('FPS '+fps.toFixed(0)+' | FRAME '+frameMs.toFixed(1)+' ms',32,420);
-  ctx.fillText('PHYS '+physicsMs.toFixed(2)+' | MAX '+peakFrameMs.toFixed(1)+' ms',32,453);
+  ctx.fillText('FPS '+fps.toFixed(0)+' | MAX '+peakFrameMs.toFixed(1)+' ms',32,420);
+  ctx.fillText('PHYS '+physicsMs.toFixed(2)+' | LAND '+terrainMs.toFixed(2)+' ms',32,453);
   ctx.fillText(lastStatus?'GROUND ASSIST':geoEnabled?geoSummary():'6DOF / INTERPOLATED',32,487);
   statsTexture.needsUpdate=true;
 }
@@ -610,7 +624,7 @@ let lastTime=null,hudTimer=0;
 const physicsDt=1/120;
 renderer.setAnimationLoop((time)=>{
   const rawDt=lastTime===null?0:Math.max(0,(time-lastTime)/1000);
-  const dt=Math.min(rawDt,0.05);
+  const dt=Math.min(rawDt,0.10);
   lastTime=time;
   if(rawDt>0){
     frameMs=frameMs?frameMs*0.9+rawDt*100:rawDt*1000;
@@ -622,25 +636,30 @@ renderer.setAnimationLoop((time)=>{
   const controls=getControls();
   if(!geoSpawnPending)accumulator+=dt;
   const startPhysics=performance.now();
-  while(accumulator>=physicsDt){
+  while(accumulator+1e-9>=physicsDt){
     previousPosition.copy(currentPosition);previousAttitude.copy(currentAttitude);
     physicsStep(physicsDt,controls);
     currentPosition.copy(plane.position);currentAttitude.copy(plane.quaternion);
-    accumulator-=physicsDt;
+    accumulator=Math.max(0,accumulator-physicsDt);
   }
   physicsMs=physicsMs*0.9+(performance.now()-startPhysics)*0.1;
   // Render an interpolated pose only; physics never integrates this pose.
   const blend=THREE.MathUtils.clamp(accumulator/physicsDt,0,1);
   plane.position.lerpVectors(previousPosition,currentPosition,blend);
   plane.quaternion.slerpQuaternions(previousAttitude,currentAttitude,blend);
-  updateTerrain(plane.position.x, plane.position.z);
+  const startTerrain=performance.now();
+  streamTimer+=dt;
+  if(!geoEnabled||streamTimer>=0.12){streamTimer=0;updateTerrain(plane.position.x,plane.position.z);}
+  if(geoEnabled)processTerrainWork();
+  const terrainCost=performance.now()-startTerrain;
+  terrainMs=terrainMs*0.9+terrainCost*0.1;terrainPeak=Math.max(terrainPeak,terrainCost);
   hudTimer += dt;
   if (hudTimer > 0.18) {
     hudTimer = 0;
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = [geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.1: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
