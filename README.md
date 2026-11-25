@@ -76,3 +76,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.10.1: queued terrain mesh refreshes (up to two per frame, soft 1.5 ms budget), streaming checks at 120 ms intervals, fixed-step catch-up up to 100 ms, floating-point accumulator tolerance and LAND CPU telemetry. Unchanged aerodynamic parameters and LOD resolution. Temporary seams possible while queued mesh updates converge.
 
 - v0.10.2: reduced near/far terrain grids from 48 to 24 subdivisions (75% fewer terrain triangles), matching LOD boundary interpolation to coarse grid; cap imagery at z16; XR framebuffer scale 0.85; physics fixed step at twice reported XR refresh rate (180 Hz fallback), with interpolation retained. 20 km view and aerodynamic coefficients unchanged.
+
+- v0.10.3: B/M cycles NORMAL, NO TEXTURES, NO FAR, WIREFRAME, MINIMAL (terrain hidden; cockpit and physics retained); Y/H requests 72/90 Hz when supported by the XR session, A/X reset. Actual reported XR Hz and draw calls in cockpit, triangles in desktop HUD. Diagnostic overrides restored after each render; terrain streaming remains active.
