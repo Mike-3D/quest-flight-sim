@@ -62,3 +62,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.8.1: increased experimental yaw-rate damping to reduce Dutch-roll oscillation, without changing rudder authority or introducing heading hold.
 
 - v0.9 experimental online terrain: LINZ aerial imagery and AWS Mapzen Terrarium DEM, XYZ z14, Canterbury origin (-43.38,172.35), 25 streamed tiles, up to 3 concurrent tile pairs, local browser key only. Flat placeholder for pending data; procedural mode via UI. No LOD or seam stitching yet. Attribution: LINZ and contributors; https://github.com/tilezen/joerd/blob/master/docs/attribution.md
+
+- v0.9.1: enabled pointer events on terrain controls; replaced browser prompt with inline key form for Quest compatibility.
