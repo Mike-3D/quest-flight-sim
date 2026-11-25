@@ -58,3 +58,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.7.3: lowered cockpit telemetry by 5 cm; increased pitch inertia from 1250 to 2000 and roll inertia from 850 to 1450 kg m², keeping yaw inertia and aerodynamic coefficients unchanged.
 
 - v0.8: P92 manual-based wing geometry, stabilator area, engine power and propeller diameter; approximate power-limited propeller, density variation, clean stall and glide calibration targets, corrected fin lift vector, rudder on left stick X / Q,E, load factor telemetry. Flight mass 550 kg assumed; coefficients, trim and inertia experimental. Flaps not implemented yet.
+
+- v0.8.1: increased experimental yaw-rate damping to reduce Dutch-roll oscillation, without changing rudder authority or introducing heading hold.
