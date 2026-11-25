@@ -68,3 +68,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.9.2: z16 aerial detail mosaics for nearby z14 tiles (1024 px), z14 overview retained, one detail job at a time; DEM loaded count and min/max heights, network error diagnostics; start moved toward Canterbury foothills (-43.32,171.93). No increase in terrain polygon count.
 
 - v0.9.3: mountain spawn near Bealey in the Waimakariri valley (-43.045,171.632), northwest heading, 450 m AGL after initial DEM arrives. Physics waits for the initial tile attempt; procedural mode unchanged.
+
+- v0.9.4: shared DEM boundary vertices (including four-way corners), neighboring meshes refreshed on load/unload, online terrain radius expanded to 3 tiles (49 total), online fog density 0.00048 and far plane 5400 m. Procedural mode and flight physics unchanged.

@@ -34,6 +34,7 @@ function noise(x,z) {
 let geoKey='';
 try{geoKey=localStorage.getItem('linzKey')||'';}catch{}
 const geoEnabled=!!geoKey;
+if(geoEnabled){scene.fog.density=0.00048;camera.far=5400;camera.updateProjectionMatrix();}
 const geoZoom=14, geoN=2**geoZoom, geoLat=-43.045, geoLon=171.632;
 const geoX=(geoLon+180)/360*geoN;
 const geoY=(1-Math.asinh(Math.tan(geoLat*Math.PI/180))/Math.PI)/2*geoN;
@@ -137,6 +138,34 @@ function sampleDEM(d,u,v){
   const a=Math.floor(x),b=Math.floor(y),c=Math.min(a+1,d.w-1),e=Math.min(b+1,d.h-1);
   return THREE.MathUtils.lerp(THREE.MathUtils.lerp(d.values[b*d.w+a],d.values[b*d.w+c],x-a),THREE.MathUtils.lerp(d.values[e*d.w+a],d.values[e*d.w+c],x-a),y-b);
 }
+// Shared edge samples: every tile touching a vertex uses exactly the same height.
+function sharedGeoHeight(tx,ty){
+  const ix=Math.round(tx),iy=Math.round(ty);
+  const xs=Math.abs(tx-ix)<1e-6?[ix-1,ix]:[Math.floor(tx)];
+  const ys=Math.abs(ty-iy)<1e-6?[iy-1,iy]:[Math.floor(ty)];
+  let sum=0,count=0;
+  for(const x of xs)for(const y of ys){
+    const d=geoTiles.get(x+','+y)?.dem;
+    if(d){sum+=sampleDEM(d,tx-x,ty-y);count++;}
+  }
+  return count?sum/count:geoGround;
+}
+function rebuildGeoMesh(t){
+  const p=t.mesh.geometry.attributes.position;
+  // PlaneGeometry's regular 49 x 49 grid, north to south.
+  const n=t.mesh.geometry.parameters.widthSegments;
+  for(let i=0;i<p.count;i++){
+    const u=(i%(n+1))/n,v=Math.floor(i/(n+1))/n;
+    const edge=u===0||u===1||v===0||v===1;
+    p.setY(i,edge?sharedGeoHeight(t.x+u,t.y+v):t.dem?sampleDEM(t.dem,u,v):geoGround);
+  }
+  p.needsUpdate=true;t.mesh.geometry.computeBoundingSphere();
+}
+function refreshGeoNeighbors(x,y){
+  for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){
+    const t=geoTiles.get((x+dx)+','+(y+dy));if(t)rebuildGeoMesh(t);
+  }
+}
 async function tileImage(url,signal){
   const res=await fetch(url,{signal});if(!res.ok)throw Error('Tile HTTP '+res.status);
   return createImageBitmap(await res.blob(),{colorSpaceConversion:'none'});
@@ -179,9 +208,7 @@ async function loadGeo(t){
       for(let i=0;i<values.length;i++)values[i]=rgba[i*4]*256+rgba[i*4+1]+rgba[i*4+2]/256-32768;
       t.dem={w:cv.width,h:cv.height,values};
       t.min=Infinity;t.max=-Infinity;for(const h of values){t.min=Math.min(t.min,h);t.max=Math.max(t.max,h);}
-      const p=t.mesh.geometry.attributes.position;
-      for(let i=0;i<p.count;i++)p.setY(i,sampleDEM(t.dem,p.getX(i)/geoSize+0.5,p.getZ(i)/geoSize+0.5));
-      p.needsUpdate=true;t.mesh.geometry.computeBoundingSphere();
+      refreshGeoNeighbors(t.x,t.y);
       if(t.x===Math.floor(geoX)&&t.y===Math.floor(geoY)){
         geoGround=geoHeight(0,180);
         if(geoSpawnPending){geoSpawnPending=false;reset();}
@@ -198,16 +225,18 @@ async function loadGeo(t){
 }
 function updateGeo(x,z){
   const cx=Math.floor(geoX+x/geoSize),cy=Math.floor(geoY+(z-180)/geoSize),need=new Set();
-  for(let dx=-2;dx<=2;dx++)for(let dy=-2;dy<=2;dy++){
+  const changed=[];
+  for(let dx=-3;dx<=3;dx++)for(let dy=-3;dy<=3;dy++){
     const tx=cx+dx,ty=cy+dy,id=tx+','+ty;need.add(id);
     if(!geoTiles.has(id)){
       const g=new THREE.PlaneGeometry(geoSize,geoSize,48,48);g.rotateX(-Math.PI/2);
       const p=g.attributes.position;for(let i=0;i<p.count;i++)p.setY(i,geoGround);
       const mesh=new THREE.Mesh(g,geoMat);mesh.position.set((tx+0.5-geoX)*geoSize,0,(ty+0.5-geoY)*geoSize+180);scene.add(mesh);
-      geoTiles.set(id,{id,x:tx,y:ty,mesh,state:'queued',abort:new AbortController()});
+      geoTiles.set(id,{id,x:tx,y:ty,mesh,state:'queued',abort:new AbortController()});changed.push([tx,ty]);
     }
   }
-  for(const [id,t] of geoTiles)if(!need.has(id)){t.abort.abort();scene.remove(t.mesh);t.mesh.geometry.dispose();if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}geoTiles.delete(id);}
+  for(const [id,t] of geoTiles)if(!need.has(id)){t.abort.abort();scene.remove(t.mesh);t.mesh.geometry.dispose();if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}geoTiles.delete(id);changed.push([t.x,t.y]);}
+  for(const [tx,ty] of changed)refreshGeoNeighbors(tx,ty);
   const queue=[...geoTiles.values()].filter(t=>t.state==='queued').sort((a,b)=>Math.hypot(a.x-cx,a.y-cy)-Math.hypot(b.x-cx,b.y-cy));
   while(geoActive<3&&queue.length)loadGeo(queue.shift());
   if(detailActive<1){const near=[...geoTiles.values()].filter(t=>t.photo&&!t.detail&&Math.abs(t.x-cx)<=1&&Math.abs(t.y-cy)<=1).sort((a,b)=>Math.hypot(a.x-cx,a.y-cy)-Math.hypot(b.x-cx,b.y-cy));if(near.length)upgradePhoto(near[0]);}
@@ -347,7 +376,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.9.3',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.9.4',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -514,7 +543,7 @@ renderer.setAnimationLoop((time)=>{
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.9.3: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = [geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.9.4: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
