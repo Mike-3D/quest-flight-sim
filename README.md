@@ -74,3 +74,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.10: experimental nested z12 far terrain with masked z14 coverage and matched near/far edges; z14 near meshes retained; z16 surrounding imagery and z17 center imagery; 20 km far plane and reduced fog. Far loads limited to two concurrent pairs, imagery detail one job. No z18/19 imagery yet.
 
 - v0.10.1: queued terrain mesh refreshes (up to two per frame, soft 1.5 ms budget), streaming checks at 120 ms intervals, fixed-step catch-up up to 100 ms, floating-point accumulator tolerance and LAND CPU telemetry. Unchanged aerodynamic parameters and LOD resolution. Temporary seams possible while queued mesh updates converge.
+
+- v0.10.2: reduced near/far terrain grids from 48 to 24 subdivisions (75% fewer terrain triangles), matching LOD boundary interpolation to coarse grid; cap imagery at z16; XR framebuffer scale 0.85; physics fixed step at twice reported XR refresh rate (180 Hz fallback), with interpolation retained. 20 km view and aerodynamic coefficients unchanged.

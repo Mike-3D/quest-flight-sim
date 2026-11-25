@@ -13,6 +13,8 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local');
+// Leave GPU headroom for the XR compositor without changing desktop resolution.
+renderer.xr.setFramebufferScaleFactor(0.85);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer, {
@@ -183,7 +185,7 @@ function refreshGeoNeighbors(x,y){
 }
 // z12 background tiles: four times wider than the z14 near tiles.
 // Each coarse cell corresponds to exactly one near tile; omit covered cells.
-const farFactor=4, farSegments=48;
+const farFactor=4, farSegments=24;
 function farSample(tx,ty){
   const fx=tx/farFactor,fy=ty/farFactor,ix=Math.round(fx),iy=Math.round(fy);
   const xs=Math.abs(fx-ix)<1e-7?[ix-1,ix]:[Math.floor(fx)];
@@ -196,9 +198,10 @@ function farSample(tx,ty){
   return n?sum/n:null;
 }
 function farEdgeHeight(tx,ty,vertical){
-  const coord=vertical?ty:tx, k=Math.floor(coord*12+1e-7), f=coord*12-k;
-  const a=vertical?farSample(tx,k/12):farSample(k/12,ty);
-  const b=vertical?farSample(tx,(k+1)/12):farSample((k+1)/12,ty);
+  const subdivisions=farSegments/farFactor;
+  const coord=vertical?ty:tx, k=Math.floor(coord*subdivisions+1e-7), f=coord*subdivisions-k;
+  const a=vertical?farSample(tx,k/subdivisions):farSample(k/subdivisions,ty);
+  const b=vertical?farSample(tx,(k+1)/subdivisions):farSample((k+1)/subdivisions,ty);
   if(a===null||b===null)return a??b;
   return THREE.MathUtils.lerp(a,b,THREE.MathUtils.clamp(f,0,1));
 }
@@ -217,7 +220,7 @@ function rebuildFar(t){
   }
   const idx=[],b=nearBounds;
   for(let y=0;y<n;y++)for(let x=0;x<n;x++){
-    const tx=t.x*4+(x+0.5)/12,ty=t.y*4+(y+0.5)/12;
+    const tx=t.x*4+(x+0.5)*farFactor/n,ty=t.y*4+(y+0.5)*farFactor/n;
     if(b&&tx>=b.x0&&tx<b.x1&&ty>=b.y0&&ty<b.y1)continue;
     const a=y*(n+1)+x,c=a+n+1;
     idx.push(a,c,a+1,c,c+1,a+1);
@@ -338,7 +341,7 @@ function updateGeo(x,z){
   for(let dx=-3;dx<=3;dx++)for(let dy=-3;dy<=3;dy++){
     const tx=cx+dx,ty=cy+dy,id=tx+','+ty;need.add(id);
     if(!geoTiles.has(id)){
-      const g=new THREE.PlaneGeometry(geoSize,geoSize,48,48);g.rotateX(-Math.PI/2);
+      const g=new THREE.PlaneGeometry(geoSize,geoSize,24,24);g.rotateX(-Math.PI/2);
       const p=g.attributes.position;for(let i=0;i<p.count;i++)p.setY(i,geoGround);
       const mesh=new THREE.Mesh(g,geoMat);mesh.position.set((tx+0.5-geoX)*geoSize,0,(ty+0.5-geoY)*geoSize+180);scene.add(mesh);
       geoTiles.set(id,{id,x:tx,y:ty,mesh,state:'queued',abort:new AbortController()});changed.push([tx,ty]);
@@ -350,7 +353,7 @@ function updateGeo(x,z){
   if(!geoSpawnPending)updateFar(cx,cy);
   const queue=[...geoTiles.values()].filter(t=>t.state==='queued').sort((a,b)=>Math.hypot(a.x-cx,a.y-cy)-Math.hypot(b.x-cx,b.y-cy));
   while(geoActive<3&&queue.length)loadGeo(queue.shift());
-  if(detailActive<1){const near=[...geoTiles.values()].filter(t=>t.photo&&t.detail!=='failed'&&t.detail!=='loading'&&Math.abs(t.x-cx)<=1&&Math.abs(t.y-cy)<=1&&t.photoZoom<((t.x===cx&&t.y===cy)?17:16)).sort((a,b)=>Math.hypot(a.x-cx,a.y-cy)-Math.hypot(b.x-cx,b.y-cy));if(near.length){const t=near[0];t.targetZoom=t.photoZoom<16?16:17;upgradePhoto(t);}}
+  if(detailActive<1){const near=[...geoTiles.values()].filter(t=>t.photo&&t.detail!=='failed'&&t.detail!=='loading'&&Math.abs(t.x-cx)<=1&&Math.abs(t.y-cy)<=1&&t.photoZoom<16).sort((a,b)=>Math.hypot(a.x-cx,a.y-cy)-Math.hypot(b.x-cx,b.y-cy));if(near.length){const t=near[0];t.targetZoom=16;upgradePhoto(t);}}
 }
 if(geoEnabled)updateGeo(0,180);else updateTerrain(0,180);
 // Small grass airstrip in the flat starting valley.
@@ -487,7 +490,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.1',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.2',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -621,7 +624,7 @@ function physicsStep(dt,controls){
   }else lastStatus='';
 }
 let lastTime=null,hudTimer=0;
-const physicsDt=1/120;
+let physicsDt=1/180; // Two fixed physics substeps per nominal 90 Hz XR frame.
 renderer.setAnimationLoop((time)=>{
   const rawDt=lastTime===null?0:Math.max(0,(time-lastTime)/1000);
   const dt=Math.min(rawDt,0.10);
@@ -659,12 +662,12 @@ renderer.setAnimationLoop((time)=>{
     drawStats();
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.1: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = ['Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.2: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
   }
   renderer.render(scene, camera);
 });
-renderer.xr.addEventListener('sessionstart', () => { lastTime = null; accumulator=0; previousPosition.copy(currentPosition); previousAttitude.copy(currentAttitude); hud.classList.add('hidden'); document.getElementById('reset').style.display='none'; });
-renderer.xr.addEventListener('sessionend', () => { lastTime = null; accumulator=0; previousPosition.copy(currentPosition); previousAttitude.copy(currentAttitude); hud.classList.remove('hidden'); document.getElementById('reset').style.display=''; });
+renderer.xr.addEventListener('sessionstart', () => { const hz=renderer.xr.getSession()?.frameRate; physicsDt=1/(Number.isFinite(hz)&&hz>=60&&hz<=144?hz*2:180); lastTime = null; accumulator=0; previousPosition.copy(currentPosition); previousAttitude.copy(currentAttitude); hud.classList.add('hidden'); document.getElementById('reset').style.display='none'; });
+renderer.xr.addEventListener('sessionend', () => { physicsDt=1/180; lastTime = null; accumulator=0; previousPosition.copy(currentPosition); previousAttitude.copy(currentAttitude); hud.classList.remove('hidden'); document.getElementById('reset').style.display=''; });
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
