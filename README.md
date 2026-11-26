@@ -86,3 +86,5 @@ v0.1: minimal world, cockpit, flight motion, thumbstick inputs, desktop controls
 - v0.10.6: refresh cycle 72/90/120 Hz when supported; AUTO TURN right stick toggles STEP (constant angle per delivered callback) vs TIME (elapsed callback timestamp), with broad markers for aliasing comparison. Normal flight unchanged.
 
 - v0.10.7: match smooth standalone test renderer settings (MSAA off, opaque framebuffer, XR scale 1, default power preference); RAW timing default; left stick click/P hides diagnostic panel and stops CanvasTexture updates; no hidden DOM HUD updates in XR; normal rendering bypasses diagnostic allocation. Aerodynamics and terrain unchanged.
+
+- v0.10.8: terrain Web Worker decodes DEM, computes shared mesh heights and far indices, assembles HD mosaics with OffscreenCanvas; main thread commits bounded ready work, with synchronous fallback and fewer far mask rebuilds. Base imagery canvas and GPU uploads still on main thread. Physics/LOD quality unchanged.

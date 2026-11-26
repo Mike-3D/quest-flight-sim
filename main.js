@@ -45,17 +45,79 @@ const geoTiles=new Map(), farTiles=new Map();
 let farActive=0, farCenter='', nearCenter='', nearBounds=null;
 const nearDirty=new Set(),farDirty=new Set();
 let terrainMs=0, terrainPeak=0, streamTimer=0;
-function queueFar(t){if(t)farDirty.add(t);}
-function queueNear(t){if(t)nearDirty.add(t);}
+let landWorker=null,workerId=0,workerBusy=0;
+const workerRequests=new Map(),meshReady=[],textureReady=[];
+try{if(geoEnabled&&typeof Worker!=='undefined'&&typeof OffscreenCanvas!=='undefined'){
+ landWorker=new Worker('./terrain-worker.js?v=0.10.8');
+ landWorker.onmessage=({data:m})=>{const p=workerRequests.get(m.id);if(!p)return;workerRequests.delete(m.id);p.cleanup();m.error?p.reject(Error(m.error)):p.resolve(m);};
+ landWorker.onerror=()=>{landWorker?.terminate();landWorker=null;for(const p of workerRequests.values()){p.cleanup();p.reject(Error('Terrain worker unavailable'));}workerRequests.clear();};
+}}catch{}
+function workerCall(m,transfer=[],signal){
+ return new Promise((resolve,reject)=>{
+  if(!landWorker){reject(Error('Worker unavailable'));return;}
+  if(signal?.aborted){reject(Error('Aborted'));return;}
+  const id=++workerId;
+  const abort=()=>{landWorker?.postMessage({type:'cancel',id});workerRequests.delete(id);reject(Error('Aborted'));};
+  const cleanup=()=>signal?.removeEventListener('abort',abort);
+  signal?.addEventListener('abort',abort,{once:true});workerRequests.set(id,{resolve,reject,cleanup});
+  try{landWorker.postMessage({...m,id},transfer);}catch(e){workerRequests.delete(id);cleanup();reject(e);}
+ });
+}
+async function decodeTerrain(bmp,t,isFar){
+ if(landWorker){
+  const r=await workerCall({type:'decode',bitmap:bmp},[bmp],t.abort.signal);
+  return r;
+ }
+ const cv=document.createElement('canvas');cv.width=bmp.width;cv.height=bmp.height;
+ const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.drawImage(bmp,0,0);bmp.close();
+ const rgba=ctx.getImageData(0,0,cv.width,cv.height).data,values=new Float32Array(cv.width*cv.height);let min=Infinity,max=-Infinity;
+ for(let i=0;i<values.length;i++){const h=rgba[i*4]*256+rgba[i*4+1]+rgba[i*4+2]/256-32768;values[i]=h;min=Math.min(min,h);max=Math.max(max,h);}
+ return {dem:{w:cv.width,h:cv.height,values},min,max};
+}
+function isCurrent(t,isFar){return (isFar?farTiles:geoTiles).get(t.id)===t;}
+function storeDEM(t,isFar){landWorker?.postMessage({type:'store',key:t.id,far:isFar,dem:t.dem});}
+function scheduleMesh(t,isFar){
+ const version=t.meshVersion||0;t.meshPending=true;workerBusy++;
+ workerCall({type:'mesh',x:t.x,y:t.y,n:t.mesh.geometry.parameters.widthSegments,far:isFar,bounds:nearBounds,ground:geoGround},[],t.abort.signal)
+ .then(r=>{if(isCurrent(t,isFar)&&version===(t.meshVersion||0))meshReady.push({t,isFar,version,r});})
+ .catch(()=>{if(isCurrent(t,isFar))(isFar?farDirty:nearDirty).add(t);})
+ .finally(()=>{t.meshPending=false;workerBusy--;});
+}
+function installPhoto(t,isFar,source,level){
+ return new Promise(resolve=>{textureReady.push({t,isFar,source,level,resolve});});
+}
+function applyPhoto(job){
+ const {t,isFar,source,level}=job;
+ if(!isCurrent(t,isFar)){source.close?.();job.resolve(false);return;}
+ let tex;
+ if(source.rgba){tex=new THREE.DataTexture(source.rgba,source.w,source.h,THREE.RGBAFormat);tex.flipY=true;tex.generateMipmaps=true;tex.minFilter=THREE.LinearMipmapLinearFilter;tex.magFilter=THREE.LinearFilter;tex.needsUpdate=true;}
+ else{const cv=document.createElement('canvas');cv.width=source.width;cv.height=source.height;cv.getContext('2d').drawImage(source,0,0);source.close?.();tex=new THREE.CanvasTexture(cv);}
+ tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=Math.min(level>14?8:4,renderer.capabilities.getMaxAnisotropy());
+ if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}
+ t.mesh.material=new THREE.MeshBasicMaterial({map:tex});t.photo=true;t.photoZoom=level;job.resolve(true);
+}
+function queueFar(t){if(t){t.meshVersion=(t.meshVersion||0)+1;farDirty.add(t);}}
+function queueNear(t){if(t){t.meshVersion=(t.meshVersion||0)+1;nearDirty.add(t);}}
 function processTerrainWork(){
-  const start=performance.now();
-  // Rebuild at most two meshes per frame. Keep old geometry until replacement.
-  for(let i=0;i<2;i++){
-    if(performance.now()-start>1.5)break;
-    if(farDirty.size){const t=farDirty.values().next().value;farDirty.delete(t);if(farTiles.get(t.id)===t)rebuildFar(t);}
-    else if(nearDirty.size){const t=nearDirty.values().next().value;nearDirty.delete(t);if(geoTiles.get(t.id)===t)rebuildGeoMesh(t);}
-    else break;
+ // One GPU-facing installation per frame; network and worker jobs are asynchronous.
+ if(textureReady.length){applyPhoto(textureReady.shift());return;}
+ if(meshReady.length){
+  const {t,isFar,version,r}=meshReady.shift();
+  if(isCurrent(t,isFar)&&version===(t.meshVersion||0)){
+   const g=t.mesh.geometry,p=g.attributes.position;for(let i=0;i<r.heights.length;i++)p.setY(i,r.heights[i]);
+   if(r.indices)g.setIndex(new THREE.BufferAttribute(r.indices,1));p.needsUpdate=true;g.computeBoundingSphere();
   }
+ }
+ let submitted=0;
+ for(const [dirty,isFar] of [[nearDirty,false],[farDirty,true]]){
+  for(const t of dirty){
+   if(submitted>=2||workerBusy>=3)return;
+   if(t.meshPending)continue;
+   dirty.delete(t);if(!isCurrent(t,isFar))continue;
+   if(landWorker)scheduleMesh(t,isFar);else (isFar?rebuildFar:rebuildGeoMesh)(t);
+   submitted++;
+  }
+ }
 }
 let geoSpawnPending=geoEnabled;
 let geoGround=0, geoActive=0, geoFailed=0, detailActive=0, geoError='';
@@ -242,18 +304,13 @@ async function loadFar(t){
   try{
     if(farTiles.get(t.id)!==t){for(const a of r)if(a.status==='fulfilled')a.value.close();return;}
     if(r[0].status==='fulfilled'){
-      const bmp=r[0].value,cv=document.createElement('canvas');cv.width=bmp.width;cv.height=bmp.height;
-      const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.drawImage(bmp,0,0);bmp.close();
-      const rgba=ctx.getImageData(0,0,cv.width,cv.height).data,values=new Float32Array(cv.width*cv.height);
-      for(let i=0;i<values.length;i++)values[i]=rgba[i*4]*256+rgba[i*4+1]+rgba[i*4+2]/256-32768;
-      t.dem={w:cv.width,h:cv.height,values};
+      const decoded=await decodeTerrain(r[0].value,t,true);if(!isCurrent(t,true)){if(r[1].status==='fulfilled')r[1].value.close();return;}
+      t.dem=decoded.dem;storeDEM(t,true);
       for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){const k=farTiles.get((t.x+dx)+','+(t.y+dy));if(k)queueFar(k);}
       refreshNearBorder();
     }
     if(r[1].status==='fulfilled'){
-      const bmp=r[1].value,cv=document.createElement('canvas');cv.width=bmp.width;cv.height=bmp.height;cv.getContext('2d').drawImage(bmp,0,0);bmp.close();
-      const tex=new THREE.CanvasTexture(cv);tex.colorSpace=THREE.SRGBColorSpace;
-      t.mesh.material=new THREE.MeshBasicMaterial({map:tex});
+      await installPhoto(t,true,r[1].value,12);
     }
     t.state=r.every(a=>a.status==='fulfilled')?'ready':'partial';
   }catch(e){t.state='partial';}finally{farActive--;}
@@ -270,7 +327,7 @@ function updateFar(cx,cy){
         const t={id,x,y,mesh,state:'queued',abort:new AbortController()};farTiles.set(id,t);rebuildFar(t);
       }
     }
-    for(const [id,t] of farTiles)if(!need.has(id)){t.abort.abort();scene.remove(t.mesh);t.mesh.geometry.dispose();if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}farTiles.delete(id);}
+    for(const [id,t] of farTiles)if(!need.has(id)){t.abort.abort();scene.remove(t.mesh);t.mesh.geometry.dispose();if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}farTiles.delete(id);landWorker?.postMessage({type:'drop',far:true,key:id});}
     for(const t of farTiles.values())queueFar(t);
   }
   if(farActive<2){const q=[...farTiles.values()].filter(t=>t.state==='queued').sort((a,b)=>Math.hypot(a.x-fx,a.y-fy)-Math.hypot(b.x-fx,b.y-fy));while(farActive<2&&q.length)loadFar(q.shift());}
@@ -283,23 +340,21 @@ function geoSummary(){
   const tiles=[...geoTiles.values()], dem=tiles.filter(t=>t.dem), photo=tiles.filter(t=>t.photo), hd=tiles.filter(t=>t.detail==='ready');
   let lo=Infinity,hi=-Infinity;
   for(const t of dem){lo=Math.min(lo,t.min);hi=Math.max(hi,t.max);}
-  return 'DEM '+dem.length+'/'+tiles.length+' | HD '+hd.length+' | FAR '+[...farTiles.values()].filter(t=>t.state==='ready').length+'/'+farTiles.size;
+  return 'DEM '+dem.length+'/'+tiles.length+' | HD '+hd.length+' | FAR '+[...farTiles.values()].filter(t=>t.state==='ready').length+'/'+farTiles.size+' | '+(landWorker?'WORKER':'MAIN')+' Q '+(nearDirty.size+farDirty.size+meshReady.length+textureReady.length);
 }
 async function upgradePhoto(t){
   detailActive++;t.detail='loading';
   const level=t.targetZoom||16, factor=2**(level-14);
-  const cv=document.createElement('canvas');cv.width=cv.height=256*factor;
-  const ctx=cv.getContext('2d');
   try{
-    // 16 z16 child photos stitched over the existing z14 geometry.
-    for(let dy=0;dy<factor;dy++)for(let dx=0;dx<factor;dx++){
-      const bmp=await tileImage('https://basemaps.linz.govt.nz/v1/tiles/aerial/3857/'+level+'/'+(t.x*factor+dx)+'/'+(t.y*factor+dy)+'.png?api='+encodeURIComponent(geoKey),t.abort.signal);
-      ctx.drawImage(bmp,dx*256,dy*256,256,256);bmp.close();
+    let source;
+    if(landWorker)source=await workerCall({type:'photo',level,factor,x:t.x,y:t.y,key:geoKey},[],t.abort.signal);
+    else{
+      const cv=document.createElement('canvas');cv.width=cv.height=256*factor;const ctx=cv.getContext('2d');
+      for(let dy=0;dy<factor;dy++)for(let dx=0;dx<factor;dx++){const bmp=await tileImage('https://basemaps.linz.govt.nz/v1/tiles/aerial/3857/'+level+'/'+(t.x*factor+dx)+'/'+(t.y*factor+dy)+'.png?api='+encodeURIComponent(geoKey),t.abort.signal);ctx.drawImage(bmp,dx*256,dy*256,256,256);bmp.close();}
+      source=cv;
     }
-    if(geoTiles.get(t.id)!==t)return;
-    const tex=new THREE.CanvasTexture(cv);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());
-    if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}
-    t.mesh.material=new THREE.MeshBasicMaterial({map:tex});t.detail='ready';t.photoZoom=level;
+    if(!isCurrent(t,false))return;
+    if(await installPhoto(t,false,source,level))t.detail='ready';
   }catch(e){t.detail='failed';if(!t.abort.signal.aborted)geoError='HD: '+e.message;}finally{detailActive--;}
 }
 async function loadGeo(t){
@@ -312,22 +367,15 @@ async function loadGeo(t){
   try{
     if(!geoTiles.has(t.id)||geoTiles.get(t.id)!==t){for(const r of results)if(r.status==='fulfilled')r.value.close();return;}
     if(results[0].status==='fulfilled'){
-      const bmp=results[0].value, cv=document.createElement('canvas');cv.width=bmp.width;cv.height=bmp.height;
-      const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.drawImage(bmp,0,0);bmp.close();
-      const rgba=ctx.getImageData(0,0,cv.width,cv.height).data, values=new Float32Array(cv.width*cv.height);
-      for(let i=0;i<values.length;i++)values[i]=rgba[i*4]*256+rgba[i*4+1]+rgba[i*4+2]/256-32768;
-      t.dem={w:cv.width,h:cv.height,values};
-      t.min=Infinity;t.max=-Infinity;for(const h of values){t.min=Math.min(t.min,h);t.max=Math.max(t.max,h);}
-      rebuildGeoMesh(t);refreshGeoNeighbors(t.x,t.y);
+      const decoded=await decodeTerrain(results[0].value,t,false);if(!isCurrent(t,false)){if(results[1].status==='fulfilled')results[1].value.close();return;}
+      t.dem=decoded.dem;t.min=decoded.min;t.max=decoded.max;storeDEM(t,false);refreshGeoNeighbors(t.x,t.y);
       if(t.x===Math.floor(geoX)&&t.y===Math.floor(geoY)){
         geoGround=geoHeight(0,180);
         if(geoSpawnPending){geoSpawnPending=false;reset();}
       }
     }
     if(results[1].status==='fulfilled'){
-      const bmp=results[1].value, cv=document.createElement('canvas');cv.width=bmp.width;cv.height=bmp.height;cv.getContext('2d').drawImage(bmp,0,0);bmp.close();
-      const tex=new THREE.CanvasTexture(cv);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=4;
-      t.mesh.material=new THREE.MeshBasicMaterial({map:tex});t.photo=true;t.photoZoom=14;
+      await installPhoto(t,false,results[1].value,14);
     }
     if(t.x===Math.floor(geoX)&&t.y===Math.floor(geoY)&&geoSpawnPending){geoSpawnPending=false;reset();}
     t.state=results.every(r=>r.status==='fulfilled')?'ready':'partial';if(t.state==='partial'){geoFailed++;geoError=results.map((r,i)=>r.status==='rejected'?(i===0?'DEM: ':'IMG: ')+r.reason.message:'').filter(Boolean).join(' / ');}
@@ -336,7 +384,7 @@ async function loadGeo(t){
 function updateGeo(x,z){
   const cx=Math.floor(geoX+x/geoSize),cy=Math.floor(geoY+(z-180)/geoSize),need=new Set();
   const changed=[];
-  const center=cx+','+cy, moved=center!==nearCenter;
+  const center=cx+','+cy, moved=center!==nearCenter,oldBounds=nearBounds;
   if(moved){nearCenter=center;nearBounds={x0:cx-3,x1:cx+4,y0:cy-3,y1:cy+4};}
   for(let dx=-3;dx<=3;dx++)for(let dy=-3;dy<=3;dy++){
     const tx=cx+dx,ty=cy+dy,id=tx+','+ty;need.add(id);
@@ -347,8 +395,8 @@ function updateGeo(x,z){
       geoTiles.set(id,{id,x:tx,y:ty,mesh,state:'queued',abort:new AbortController()});changed.push([tx,ty]);
     }
   }
-  for(const [id,t] of geoTiles)if(!need.has(id)){t.abort.abort();scene.remove(t.mesh);t.mesh.geometry.dispose();if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}geoTiles.delete(id);changed.push([t.x,t.y]);}
-  if(moved){for(const t of farTiles.values())queueFar(t);refreshNearBorder();}
+  for(const [id,t] of geoTiles)if(!need.has(id)){t.abort.abort();scene.remove(t.mesh);t.mesh.geometry.dispose();if(t.mesh.material!==geoMat){t.mesh.material.map?.dispose();t.mesh.material.dispose();}geoTiles.delete(id);landWorker?.postMessage({type:'drop',far:false,key:id});changed.push([t.x,t.y]);}
+  if(moved){const intersects=(t,b)=>b&&t.x*4<b.x1&&(t.x+1)*4>b.x0&&t.y*4<b.y1&&(t.y+1)*4>b.y0;for(const t of farTiles.values())if(intersects(t,oldBounds)||intersects(t,nearBounds))queueFar(t);refreshNearBorder();}
   for(const [tx,ty] of changed)refreshGeoNeighbors(tx,ty);
   if(!geoSpawnPending)updateFar(cx,cy);
   const queue=[...geoTiles.values()].filter(t=>t.state==='queued').sort((a,b)=>Math.hypot(a.x-cx,a.y-cy)-Math.hypot(b.x-cx,b.y-cy));
@@ -490,7 +538,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.7',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.8',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -755,7 +803,7 @@ renderer.setAnimationLoop((time)=>{
     if(!renderer.xr.isPresenting){
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.7: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.8: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
     }
   }
   drawDiagnosticFrame();
