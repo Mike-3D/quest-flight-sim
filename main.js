@@ -8,13 +8,13 @@ scene.background = new THREE.Color(0x84c9fa);
 scene.fog = new THREE.FogExp2(0x84c9fa, 0.0008);
 
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.08, 4500);
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias: false, alpha:false });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local');
 // Leave GPU headroom for the XR compositor without changing desktop resolution.
-renderer.xr.setFramebufferScaleFactor(0.85);
+renderer.xr.setFramebufferScaleFactor(1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer, {
@@ -490,7 +490,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.6',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.7',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -524,7 +524,8 @@ const testOrigin=new THREE.Vector3(),testAttitude=new THREE.Quaternion(),testYaw
 let testStart=null,testAngle=0,testPreviousTime=null;
 let diagMode=0,modeWasDown=false,hzWasDown=false,refreshBusy=false,refreshNote='';
 let xrHz=0, drawCalls=0, drawTriangles=0;
-let timingMode=1,timingWasDown=false,clockError=0;
+let timingMode=0,timingWasDown=false,clockError=0;
+let panelEnabled=true,panelWasDown=false;
 const timingNames=['RAW','SYNC'];
 const testHorizon=new THREE.GridHelper(6000,120,0xffffff,0x819eb0);
 // Broad opaque markers distinguish edge aliasing from repeated-frame judder.
@@ -554,6 +555,7 @@ async function toggleRefresh(){
   catch{refreshNote='HZ REQUEST FAILED';}finally{refreshBusy=false;}
 }
 function drawDiagnosticFrame(){
+  if(diagMode===0){testHorizon.visible=false;renderer.render(scene,camera);drawCalls=renderer.info.render.calls;drawTriangles=renderer.info.render.triangles;return;}
   const saved=[];
   function apply(mesh,far){
     if(diagMode>=4||(diagMode===2&&far)){saved.push([mesh,mesh.visible,mesh.material]);mesh.visible=false;}
@@ -572,7 +574,7 @@ function drawDiagnosticFrame(){
   finally{for(const [m,v,mat] of saved){m.visible=v;if(mat!==undefined)m.material=mat;}}
 }
 function getControls() {
-  let steerX = 0, steerY = 0, throttle = 0, rudderInput=0, controllers = 0, resetDown = false, modeDown=false,hzDown=false,timingDown=false;
+  let steerX = 0, steerY = 0, throttle = 0, rudderInput=0, controllers = 0, resetDown = false, modeDown=false,hzDown=false,timingDown=false,panelDown=false;
   const session = renderer.xr.getSession();
   if (session) {
     for (const src of session.inputSources) {
@@ -584,6 +586,7 @@ function getControls() {
       if (hand === 'left') { throttle = -y; rudderInput=x; controllers++; }
       if(src.gamepad.buttons[4]?.pressed)resetDown=true;
       if(hand==='right'&&src.gamepad.buttons[3]?.pressed)timingDown=true;
+      if(hand==='left'&&src.gamepad.buttons[3]?.pressed)panelDown=true;
       if(src.gamepad.buttons[5]?.pressed){if(hand==='right')modeDown=true;else if(hand==='left')hzDown=true;}
     }
   }
@@ -604,6 +607,9 @@ function getControls() {
   timingDown=timingDown||keys.has('KeyT');
   if(timingDown&&!timingWasDown){timingMode=1-timingMode;clockError=0;}
   timingWasDown=timingDown;
+  panelDown=panelDown||keys.has('KeyP');
+  if(panelDown&&!panelWasDown){panelEnabled=!panelEnabled;statsPanel.visible=panelEnabled;}
+  panelWasDown=panelDown;
   if (resetDown && !resetWasDown) reset();
   resetWasDown = resetDown;
   if(keys.has('KeyQ'))rudderInput=-1;
@@ -743,12 +749,14 @@ renderer.setAnimationLoop((time)=>{
   const terrainCost=performance.now()-startTerrain;
   terrainMs=terrainMs*0.9+terrainCost*0.1;terrainPeak=Math.max(terrainPeak,terrainCost);
   hudTimer += dt;
-  if (hudTimer > 0.18) {
+  if (hudTimer > 0.25) {
     hudTimer = 0;
-    drawStats();
+    if(panelEnabled)drawStats();
+    if(!renderer.xr.isPresenting){
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.6: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.7: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    }
   }
   drawDiagnosticFrame();
 });
