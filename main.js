@@ -1,14 +1,14 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.181.2/build/three.module.js';
 import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.181.2/examples/jsm/webxr/VRButton.js';
 
-import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.181.2/examples/jsm/loaders/GLTFLoader.js';
+
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x84c9fa);
 scene.fog = new THREE.FogExp2(0x84c9fa, 0.0008);
 
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.08, 4500);
-const renderer = new THREE.WebGLRenderer({ antialias: false, alpha:false });
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha:false });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
@@ -35,7 +35,7 @@ function noise(x,z) {
 let geoKey='';
 try{geoKey=localStorage.getItem('linzKey')||'';}catch{}
 const geoEnabled=!!geoKey;
-const staticWorld=new URLSearchParams(location.search).get('world')!=='dynamic';
+const staticWorld=true; // Keep terrain static throughout this performance test.
 let worldLocked=false, warmupQueue=null, warmupIndex=0;
 const worldStatus=document.getElementById('worldStatus');
 if(staticWorld)document.body.classList.add('world-loading');else worldStatus.textContent='DYNAMIC WORLD · streaming ON';
@@ -439,8 +439,8 @@ const plane = new THREE.Group();
 scene.add(plane);
 const cockpit = new THREE.Group();
 plane.add(cockpit);
-const bodyMat = new THREE.MeshStandardMaterial({ color: 0x263d50, roughness: 0.65, metalness: 0.15 });
-const brightMat = new THREE.MeshStandardMaterial({ color: 0xeff2e5, roughness: 0.7 });
+const bodyMat = new THREE.MeshBasicMaterial({color:0x263d50});
+const brightMat = new THREE.MeshBasicMaterial({color:0xeff2e5});
 function part(geometry, material, x, y, z) {
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.set(x, y, z);
@@ -462,38 +462,7 @@ const flightEl = document.getElementById('flight');
 const inputEl = document.getElementById('input');
 const messageEl = document.getElementById('message');
 const hud = document.getElementById('hud');
-let modelStatus = 'Загрузка кабины…';
-// GLB is authored facing +Z. Rotate to match the aircraft's -Z flight axis.
-const importedCockpit = new THREE.Group();
-importedCockpit.rotation.y = Math.PI;
-// Align the left pilot's eye point with the camera rig.
-importedCockpit.position.set(0.235, 0.38, 0.27);
-new GLTFLoader().load('./assets/models/Cockpit_01.glb', gltf => {
-  importedCockpit.add(gltf.scene);
-  // Exterior uses exactly the same authored coordinate system and transform.
-  new GLTFLoader().load('./assets/models/Exterior_01.glb', exterior => {
-    importedCockpit.add(exterior.scene);
-    modelStatus = 'Кабина и экстерьер GLB загружены';
-  }, undefined, error => {
-    console.error('Exterior load failed', error);
-    modelStatus = 'Кабина загружена · ошибка экстерьера';
-  });
-  // The supplied shell and seats contain one half only. Mirror those pieces.
-  for (const name of ['Cockpit', 'Chair01', 'Chair02']) {
-    const original = gltf.scene.getObjectByName(name);
-    if (!original) continue;
-    const mirror = new THREE.Group();
-    mirror.scale.x = -1;
-    mirror.add(original.clone(true));
-    gltf.scene.add(mirror);
-  }
-  plane.add(importedCockpit);
-  cockpit.visible = false;
-  modelStatus = 'Кабина GLB загружена';
-}, undefined, error => {
-  console.error('Cockpit load failed', error);
-  modelStatus = 'Ошибка загрузки GLB — резервная кабина';
-});
+const modelStatus='Simple cockpit · no GLB';
 const keys = new Set();
 addEventListener('keydown', e => {
   keys.add(e.code);
@@ -565,7 +534,7 @@ function drawStats(){
   const ctx=statsCtx;
   ctx.fillStyle='#101c23';ctx.fillRect(0,0,768,512);
   ctx.strokeStyle='#477d83';ctx.lineWidth=5;ctx.strokeRect(5,5,758,502);
-  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.9',32,54);
+  ctx.fillStyle='#8ddbd1';ctx.font='bold 35px monospace';ctx.fillText('FLIGHT DATA  v0.10.10',32,54);
   const rows=[
     ['TAS',(speed*3.6).toFixed(0)+' km/h'],
     ['AGL',(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)+' m'],
@@ -620,14 +589,12 @@ function syncRefresh(){
 async function toggleRefresh(){
   const session=renderer.xr.getSession();
   if(!session||refreshBusy)return;
-  const rates=[72,90,120].filter(h=>Array.from(session.supportedFrameRates||[]).some(v=>Math.abs(v-h)<0.1));
-  if(!rates.length){refreshNote='HZ UNSUPPORTED';return;}
-  const index=rates.findIndex(h=>Math.abs(h-(session.frameRate||90))<0.1);
-  const target=rates[(index+1)%rates.length];
-  if(typeof session.updateTargetFrameRate!=='function'||!Array.from(session.supportedFrameRates||[]).includes(target)){refreshNote='HZ UNSUPPORTED';return;}
+  if(Math.abs((session.frameRate||0)-72)<0.1){refreshNote='72 HZ';return;}
+  const target=Array.from(session.supportedFrameRates||[]).find(h=>Math.abs(h-72)<0.1);
+  if(typeof session.updateTargetFrameRate!=='function'||target===undefined){refreshNote='72 HZ UNSUPPORTED';return;}
   refreshBusy=true;
-  try{await session.updateTargetFrameRate(target);if(renderer.xr.getSession()===session){syncRefresh();refreshNote='HZ '+target+' REQUESTED';}}
-  catch{refreshNote='HZ REQUEST FAILED';}finally{refreshBusy=false;}
+  try{await session.updateTargetFrameRate(target);if(renderer.xr.getSession()===session){syncRefresh();refreshNote='72 HZ REQUESTED';}}
+  catch{refreshNote='72 HZ REQUEST FAILED';}finally{refreshBusy=false;}
 }
 function drawDiagnosticFrame(){
   if(diagMode===0){testHorizon.visible=false;renderer.render(scene,camera);drawCalls=renderer.info.render.calls;drawTriangles=renderer.info.render.triangles;return;}
@@ -641,7 +608,7 @@ function drawDiagnosticFrame(){
     for(const t of farTiles.values())apply(t.mesh,true);
     for(const m of chunks.values())apply(m,false);
     if(diagMode>=4){saved.push([runway,runway.visible,runway.material]);runway.visible=false;
-      for(const m of [importedCockpit,cockpit]){saved.push([m,m.visible,undefined]);m.visible=false;}
+      for(const m of [cockpit]){saved.push([m,m.visible,undefined]);m.visible=false;}
     }
   }
   testHorizon.visible=diagMode>=4;
@@ -831,12 +798,12 @@ renderer.setAnimationLoop((time)=>{
     if(!renderer.xr.isPresenting){
     flightEl.textContent = `Скорость: ${(speed*3.6).toFixed(0)} км/ч · Газ: ${(power*100).toFixed(0)}% · AoA: ${(alpha*180/Math.PI).toFixed(1)}° · Slip: ${(beta*180/Math.PI).toFixed(1)}° · Высота над землёй: ${(plane.position.y-terrainHeight(plane.position.x,plane.position.z)).toFixed(0)} м`;
     inputEl.textContent = `Контроллеры: ${controls.controllers} · Правый: ${controls.steerX.toFixed(1)}, ${controls.steerY.toFixed(1)} · Левый: ${controls.throttle.toFixed(1)}`;
-    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.9: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
+    messageEl.textContent = [diagModes[diagMode]+' | XR '+(xrHz||'?')+' Hz | DC '+drawCalls+' | TRI '+drawTriangles,refreshNote,'Physics '+Math.round(1/physicsDt)+' Hz',geoEnabled?geoSummary()+' · '+geoError:'Физика 6DOF v0.10.10: '+chunks.size+' чанков', modelStatus, lastStatus].filter(Boolean).join(' · ');
     }
   }
   drawDiagnosticFrame();
 });
-renderer.xr.addEventListener('sessionstart', () => { if(staticWorld&&worldLocked)reset();syncRefresh(); const session=renderer.xr.getSession();session?.addEventListener('frameratechange',syncRefresh);refreshNote=''; lastTime = null; accumulator=0; previousPosition.copy(currentPosition); previousAttitude.copy(currentAttitude); hud.classList.add('hidden'); document.getElementById('reset').style.display='none'; });
+renderer.xr.addEventListener('sessionstart', () => { if(staticWorld&&worldLocked)reset();syncRefresh(); const session=renderer.xr.getSession();session?.addEventListener('frameratechange',syncRefresh);refreshNote=''; lastTime = null; accumulator=0; previousPosition.copy(currentPosition); previousAttitude.copy(currentAttitude); hud.classList.add('hidden'); document.getElementById('reset').style.display='none'; toggleRefresh(); });
 renderer.xr.addEventListener('sessionend', () => { physicsDt=1/180; xrHz=0;refreshNote='';lastTime = null; accumulator=0; previousPosition.copy(currentPosition); previousAttitude.copy(currentAttitude); hud.classList.remove('hidden'); document.getElementById('reset').style.display=''; });
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
