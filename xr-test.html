@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Raw WebXR motion test 1</title>
+<title>Raw WebXR motion test 2</title>
 <style>body{font:16px system-ui;background:#162535;color:#fff;padding:20px;max-width:640px;margin:auto}button,select{font:inherit;padding:12px;margin:5px}pre{white-space:pre-wrap}canvas{width:100%;height:100px}</style>
-<h1>Raw WebXR motion test</h1>
+<h1>Raw WebXR motion test v2</h1>
 <p>Без Three.js. Неподвижные столбики, автоматический поворот 20°/с. Сядьте перед тестом.</p>
 <label>Частота <select id="hz"><option>72</option><option selected>90</option><option>120</option></select></label>
 <label>Режим <select id="mode"><option value="time">TIME</option><option value="step">STEP</option><option value="still">STATIC</option></select></label>
@@ -10,7 +10,8 @@
 <p>В VR: A/X — TIME / STEP / STATIC; B/Y — следующая поддерживаемая частота. После выхода отображается статистика интервалов кадров. Для остановки используйте системную кнопку.</p>
 <script>
 'use strict';
-const el=id=>document.getElementById(id), status=el('status');
+const el=id=>document.getElementById(id), output=el('status');
+let rendered=0,poses=0,callbacks=0,frameError='';
 let session=null,gl,program,buffer,loc,ref,layer,mode='time',angle=0,last=null,first=null,count=0,total=0,max=0,long=0,held=[false,false],busy=false,report='';
 function shader(type,source){const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s;}
 function init(){
@@ -45,24 +46,31 @@ function controls(){
  held=[a,b];
 }
 function frame(t,f){
- if(f.session!==session)return;
+ if(!session)return;
+ callbacks++;
  session.requestAnimationFrame(frame);
+ try{
  controls();
  const dt=last===null?0:t-last,period=1000/(session.frameRate||90);
  if(last!==null){count++;total+=dt;max=Math.max(max,dt);if(dt>period*1.5)long++;}
  last=t;if(first===null)first=t;
  if(mode!=='still')angle+=(mode==='step'?(dt?period:0):dt)*Math.PI/9000;
- const pose=f.getViewerPose(ref);if(!pose)return;
- gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.clearColor(.64,.77,.87,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+ const activeLayer=session.renderState.baseLayer;if(!activeLayer)return;
+ gl.bindFramebuffer(gl.FRAMEBUFFER,activeLayer.framebuffer);
+ gl.disable(gl.SCISSOR_TEST);gl.colorMask(true,true,true,true);gl.depthMask(true);
+ gl.clearColor(.64,.77,.87,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+ const pose=f.getViewerPose(ref);if(!pose)return;poses++;
  gl.useProgram(program);gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
  gl.enableVertexAttribArray(loc.p);gl.vertexAttribPointer(loc.p,3,gl.FLOAT,false,24,0);
  gl.enableVertexAttribArray(loc.c);gl.vertexAttribPointer(loc.c,3,gl.FLOAT,false,24,12);
  const c=Math.cos(angle),s=Math.sin(angle);
  rot.set([c,0,-s,0,0,1,0,0,s,0,c,0,0,0,0,1]);
- for(const v of pose.views){const r=layer.getViewport(v);gl.viewport(r.x,r.y,r.width,r.height);
+ for(const v of pose.views){const r=activeLayer.getViewport(v);gl.viewport(r.x,r.y,r.width,r.height);
   mul(mv,v.transform.inverse.matrix,rot);mul(vp,v.projectionMatrix,mv);
   gl.uniformMatrix4fv(loc.vp,false,vp);gl.drawArrays(gl.TRIANGLES,0,loc.n);
  }
+ rendered++;
+ }catch(e){frameError=String(e);session.end().catch(()=>{});}
 }
 el('go').onclick=async()=>{
  if(session)return;
@@ -70,15 +78,15 @@ el('go').onclick=async()=>{
   if(!navigator.xr)throw Error('WebXR unavailable');
   session=await navigator.xr.requestSession('immersive-vr');
   const current=session;
-  current.addEventListener('end',()=>{status.textContent=report+'\n'+summarize();session=null;el('go').disabled=false;});
-  el('go').disabled=true;report='';mode=el('mode').value;angle=0;held=[false,false];resetStats();
+  current.addEventListener('end',()=>{output.textContent=report+'\n'+summarize()+'\nCallbacks: '+callbacks+' / poses: '+poses+' / rendered: '+rendered+'\n'+frameError;session=null;el('go').disabled=false;});
+  el('go').disabled=true;report='';callbacks=poses=rendered=0;frameError='';mode=el('mode').value;angle=0;held=[false,false];resetStats();
   if(!gl)init();await gl.makeXRCompatible();
-  layer=new XRWebGLLayer(current,gl,{framebufferScaleFactor:.8,antialias:true});
+  layer=new XRWebGLLayer(current,gl,{framebufferScaleFactor:1,antialias:false,alpha:false,depth:true});
   current.updateRenderState({baseLayer:layer,depthNear:.05,depthFar:60});
   ref=await current.requestReferenceSpace('local');
   current.addEventListener('frameratechange',()=>{report+='\n'+summarize();resetStats();});
-  await rate(Number(el('hz').value));
-  status.textContent='Running';current.requestAnimationFrame(frame);
- }catch(e){status.textContent=String(e);if(session)await session.end().catch(()=>{});session=null;el('go').disabled=false;}
+  output.textContent='Running';current.requestAnimationFrame(frame);
+  rate(Number(el('hz').value));
+ }catch(e){frameError=String(e);output.textContent=frameError;if(session)await session.end().catch(()=>{});session=null;el('go').disabled=false;}
 };
 </script></html>
